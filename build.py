@@ -46,7 +46,7 @@ MIN_EMPLOYMENT = 100
 # latest employment). All 15 counties × 4 sections would be 60 embeds and an
 # unwieldy 15-tab strip; the largest five keep the static build and the
 # iframe set manageable while covering the bulk of UP employment.
-DETAIL_COUNTY_N = 5
+DETAIL_COUNTY_N = 15
 
 
 def _detail_counties(df) -> list[str]:
