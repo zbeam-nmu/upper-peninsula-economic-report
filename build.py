@@ -1020,6 +1020,299 @@ SECTION_BUILDERS = [
 ]
 
 
+def build_custom_landing_page(df):
+    """Build a fuller public-facing landing page for the regional dashboard."""
+    from components.top_counties import build_figure as _top_fig, get_top_counties
+    from data.clean import get_total_covered, get_latest_quarter
+
+    figures = {}
+    summary = get_total_covered(df)
+    latest = get_latest_quarter(summary)
+
+    if not latest.empty:
+        r = latest.iloc[0]
+        snapshot_quarter = f"{int(r['year'])} Q{int(r['qtr'])}"
+        latest_total_emp = fmt_number(float(r['employment'])) if pd.notna(r.get('employment')) else "—"
+    else:
+        snapshot_quarter = "Current quarter unavailable"
+        latest_total_emp = "—"
+
+    top = get_top_counties(df)
+    if not top.empty:
+        fig = _top_fig(top)
+        figures["custom-top-counties"] = _fig_json(fig)
+        top_aria = (
+            "Grouped bar chart comparing year-over-year employment, establishment, "
+            "and wage growth for the five largest Upper Peninsula county economies."
+        )
+        top_counties_html = """
+        <section class="custom-visuals">
+          <div class="section-heading">
+            <p class="eyebrow">Regional comparison</p>
+            <h2>Where the growth is happening</h2>
+          </div>
+          <figure class="chart-figure">
+            <figcaption>
+              The five largest Upper Peninsula county economies compared on year-over-year
+              growth in jobs, businesses, and wages.
+            </figcaption>
+            <div id="custom-top-counties" class="plotly-chart" role="img" aria-label="{aria}"></div>
+          </figure>
+          {table}
+        </section>
+        """.format(
+            aria=top_aria,
+            table=_top_table_html(top),
+        )
+    else:
+        top_counties_html = """
+        <section class="custom-visuals">
+          <div class="section-heading">
+            <p class="eyebrow">Regional comparison</p>
+            <h2>Where the growth is happening</h2>
+          </div>
+          <p class="empty-state">County comparison data is not available for this build.</p>
+        </section>
+        """
+
+    featured = top.head(3).copy() if not top.empty else pd.DataFrame()
+    featured_cards = ""
+    if not featured.empty:
+        for _, row in featured.iterrows():
+            featured_cards += (
+                f'<div class="feature-card">'
+                f'<div class="feature-label">{row["county_name"]}</div>'
+                f'<div class="feature-value">{fmt_number(row["employment"])}</div>'
+                f'<div class="feature-meta">covered employment</div>'
+                f'</div>'
+            )
+
+    if not featured_cards:
+        featured_cards = (
+            '<div class="feature-card"><div class="feature-label">Upper Peninsula</div>'
+            '<div class="feature-value">15</div><div class="feature-meta">counties</div></div>'
+        )
+
+    page = "\n".join([
+        "<!DOCTYPE html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="UTF-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+        "<title>Upper Peninsula Regional Economic Report</title>",
+        '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>',
+        "<style>",
+        CSS,
+        """
+        body {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem 3rem;
+        }
+        .landing-shell {
+            display: block;
+        }
+        .landing-header {
+            padding: 1rem 0 2rem;
+        }
+        .landing-kicker {
+            display: inline-block;
+            background: #EAF3FF;
+            color: #0B4F8A;
+            padding: 0.35rem 0.8rem;
+            border-radius: 999px;
+            font-size: 0.76rem;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 1rem;
+        }
+        .landing-header h1 {
+            font-size: clamp(2.3rem, 5vw, 4rem);
+            line-height: 1.08;
+            margin: 0 0 0.75rem;
+            color: #0B4F8A;
+        }
+        .landing-subhead {
+            max-width: 62rem;
+            font-size: 1.08rem;
+            color: #374151;
+            line-height: 1.7;
+            margin: 0 0 1.5rem;
+        }
+        .landing-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1.75rem;
+        }
+        .primary-btn, .secondary-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.8rem 1.2rem;
+            border-radius: 0.6rem;
+            font-weight: 700;
+            text-decoration: none;
+            transition: opacity 0.2s ease;
+        }
+        .primary-btn {
+            background: #0B4F8A;
+            color: #fff;
+        }
+        .secondary-btn {
+            background: #F3F4F6;
+            color: #0F172A;
+            border: 1px solid #D1D5DB;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin: 2rem 0 2.5rem;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #F8F9FA 0%, #FFFFFF 100%);
+            border: 1px solid #E5E7EB;
+            border-left: 5px solid #0B4F8A;
+            border-radius: 12px;
+            padding: 1.25rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+        .stat-card h3 {
+            margin: 0 0 0.5rem;
+            font-size: 0.8rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #4B5563;
+        }
+        .stat-value {
+            font-size: clamp(1.7rem, 3vw, 2.4rem);
+            font-weight: 700;
+            color: #0B4F8A;
+            line-height: 1.1;
+        }
+        .stat-meta {
+            color: #4B5563;
+            margin-top: 0.3rem;
+            font-size: 0.92rem;
+        }
+        .section-heading {
+            margin: 2rem 0 1rem;
+        }
+        .eyebrow {
+            margin: 0 0 0.35rem;
+            font-size: 0.72rem;
+            color: #0B4F8A;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .section-heading h2 {
+            margin: 0;
+            color: #0B4F8A;
+            font-size: clamp(1.7rem, 3vw, 2.4rem);
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin: 1.5rem 0 2rem;
+        }
+        .feature-card {
+            border: 1px solid #E5E7EB;
+            border-radius: 12px;
+            padding: 1rem 1.1rem;
+            background: #FFF;
+        }
+        .feature-label {
+            font-size: 0.76rem;
+            font-weight: 700;
+            color: #4B5563;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .feature-value {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #0B4F8A;
+            margin: 0.4rem 0;
+        }
+        .feature-meta {
+            font-size: 0.9rem;
+            color: #4B5563;
+        }
+        .lead-copy {
+            font-size: 1.02rem;
+            color: #374151;
+            line-height: 1.75;
+            max-width: 68rem;
+            margin: 0 0 1rem;
+        }
+        .custom-visuals {
+            margin-top: 2rem;
+        }
+        .empty-state {
+            color: #374151;
+            background: #F9FAFB;
+            border: 1px solid #E5E7EB;
+            padding: 1rem 1.2rem;
+            border-radius: 0.75rem;
+        }
+        @media (max-width: 768px) {
+            .landing-actions { flex-direction: column; align-items: stretch; }
+            .primary-btn, .secondary-btn { width: 100%; }
+        }
+        """,
+        "</style>",
+        "</head>",
+        "<body>",
+        "<div class=\"landing-shell\">",
+        "  <header class=\"landing-header\">",
+        "    <div class=\"landing-kicker\">Michigan economic dashboard</div>",
+        "    <h1>Upper Peninsula labor force and business conditions</h1>",
+        "    <p class=\"landing-subhead\">",
+        "      Quarterly data on employment, wages, and business formation show how the 15-county",
+        "      region is evolving across industry, population shifts, and local opportunity.",
+        "    </p>",
+        "    <div class=\"landing-actions\">",
+        "      <a class=\"primary-btn\" href=\"index.html\">Open the full dashboard</a>",
+        "      <a class=\"secondary-btn\" href=\"#regional-comparison\">Explore county trends</a>",
+        "    </div>",
+        "    <div class=\"stats-grid\">",
+        "      <div class=\"stat-card\"><h3>Counties</h3><div class=\"stat-value\">15</div><div class=\"stat-meta\">Upper Peninsula counties</div></div>",
+        f"      <div class=\"stat-card\"><h3>Latest data</h3><div class=\"stat-value\">{snapshot_quarter}</div><div class=\"stat-meta\">Quarter covered in the dashboard</div></div>",
+        f"      <div class=\"stat-card\"><h3>Covered employment</h3><div class=\"stat-value\">{latest_total_emp}</div><div class=\"stat-meta\">Latest reported employment level</div></div>",
+        "    </div>",
+        "  </header>",
+        "  <main>",
+        "    <section>",
+        "      <div class=\"section-heading\">",
+        "        <p class=\"eyebrow\">Regional overview</p>",
+        "        <h2>What the data says</h2>",
+        "      </div>",
+        "      <p class=\"lead-copy\">",
+        "        The Upper Peninsula is a region shaped by a mix of manufacturing, tourism, logistics,",
+        "        and rural service activity. This dashboard tracks quarterly changes in jobs, wages, and",
+        "        firm formation to help the public, community leaders, and economic developers understand",
+        "        which areas are gaining momentum and where structural challenges remain.",
+        "      </p>",
+        f"      <div class=\"feature-grid\">{featured_cards}</div>",
+        "    </section>",
+        f"    <div id=\"regional-comparison\">{top_counties_html}</div>",
+        "  </main>",
+        "  <footer class=\"footer\">Source: <a href=\"https://www.bls.gov/cew/\">BLS QCEW</a> &mdash; Quarterly</footer>",
+        "</div>",
+        "<script>",
+        f"var figureData = {json.dumps(figures)};",
+        JS,
+        "</script>",
+        "</body>",
+        "</html>",
+    ])
+    return page
+
+
 def build_html(df):
     """Assemble the complete static HTML dashboard."""
     from data.fetch_fred import fetch_real_gdp, fetch_unemployment_rate
@@ -1352,6 +1645,11 @@ if __name__ == "__main__":
     output = DOCS_DIR / "index.html"
     output.write_text(html, encoding="utf-8")
     print(f"Done! {output} ({output.stat().st_size / 1024:.0f} KB)")
+
+    print("Building custom landing page...")
+    custom_output = DOCS_DIR / "custom-page.html"
+    custom_output.write_text(build_custom_landing_page(df), encoding="utf-8")
+    print(f"Done! {custom_output} ({custom_output.stat().st_size / 1024:.0f} KB)")
 
     print("Building embed pages...")
     write_embeds(df)
