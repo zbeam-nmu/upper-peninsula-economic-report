@@ -1,3 +1,5 @@
+# QCEW cleaning and filtering: turns raw BLS data into analysis-ready tables,
+# and derives the per-county KPI values shown on the regional snapshot card.
 """
 Cleaning pipeline and filtering helpers for QCEW data.
 Handles type conversion, derived fields, disclosure suppression, and industry labeling.
@@ -22,11 +24,14 @@ from data.constants import (
 QUARTER_TO_MONTH = {1: 2, 2: 5, 3: 8, 4: 11}
 
 
+# Adds a `date` column built from `year` and `qtr` using the mid-quarter
+# convention. Returns a copy. Shared by clean() and get_national_qoq_pct() so
+# the date convention has a single source of truth.
 def add_date_column(df: pd.DataFrame) -> pd.DataFrame:
-    """Add a `date` column from `year` + `qtr` using the project's mid-quarter convention.
+    """Copy df, then build a "YYYY-M-01" string per row and convert it to a datetime.
 
-    Returns a copy of df with the new column appended. Used by clean() (county data)
-    and get_national_qoq_pct() so the date convention has a single source of truth.
+    The year comes from `year` (cast to int), and the month comes from mapping
+    `qtr` through QUARTER_TO_MONTH. The result is appended as `date`.
     """
     df = df.copy()
     df["date"] = pd.to_datetime(
@@ -36,8 +41,23 @@ def add_date_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Runs the full cleaning pipeline on raw county QCEW data: fixes types, adds
+# derived fields (employment, dates, annual wage, suppression flag), and labels
+# industries. Returns df unchanged if it is empty.
 def clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Full cleaning pipeline: types, derived fields, industry labels."""
+    """Copy df and apply these steps in order.
+
+    1. Strip quote characters from the string code columns.
+    2. Convert NUMERIC_COLS to numbers, turning unparseable values into NaN.
+    3. Set is_suppressed to True where disclosure_code is "N".
+    4. Set employment to month3_emplvl.
+    5. Build year_qtr labels (e.g., "2024 Q2") and the date column.
+    6. Set avg_annual_wage to avg_wkly_wage * 52.
+    7. Sort by county_name, date, industry_code.
+    8. Set industry_label from SUPERSECTOR_DOMAIN_CODES, then SUPERSECTOR_LABELS
+       for codes that didn't match, then the raw industry_code for any still
+       missing. Code "10" is always labeled "Total, All Industries".
+    """
     if df.empty:
         return df
 
@@ -89,34 +109,41 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Filtering helpers ─────────────────────────────────────────────────────────
 
+# Returns the total covered employment rows (all ownerships combined).
 def get_total_covered(df: pd.DataFrame) -> pd.DataFrame:
-    """Total covered employment (own_code=0, agglvl=70)."""
+    """Keep rows where own_code is 0 and agglvl_code equals AGGLVL_TOTAL (70)."""
     return df[(df["own_code"] == 0) & (df["agglvl_code"] == AGGLVL_TOTAL)]
 
 
+# Returns the 2-digit NAICS sector rows for one ownership type (private by default).
 def get_naics_sectors(df: pd.DataFrame, own_code: int = 5) -> pd.DataFrame:
-    """NAICS 2-digit sector data (agglvl=74) for a given ownership type."""
+    """Keep rows matching own_code where agglvl_code equals AGGLVL_NAICS_SECTOR (74)."""
     return df[(df["own_code"] == own_code) & (df["agglvl_code"] == AGGLVL_NAICS_SECTOR)]
 
 
+# Returns only the rows from the most recent quarter in the data.
 def get_latest_quarter(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter to the most recent quarter available in the data."""
+    """Find the maximum `date` and keep the rows equal to it; return df as is if empty."""
     if df.empty:
         return df
     max_date = df["date"].max()
     return df[df["date"] == max_date]
 
 
+# Returns one row per county summarizing its latest-quarter total covered QCEW
+# (employment, establishments, annual wage, and YoY changes). Counties with no
+# total-covered data are omitted. Shared by the Upper Peninsula county map and
+# the top-counties growth chart.
 def latest_county_summaries(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per county summarizing its latest-quarter total-covered QCEW.
+    """Group get_total_covered(df) by county and take each county's latest quarter.
 
     Each county is reduced to the most recent quarter for which it has a
-    total-covered (own_code=0, agglvl=70) row. Returns columns:
-    county_name, area_fips, year, qtr, employment, qtrly_estabs,
-    avg_annual_wage, oty_emp_pct, oty_estab_pct, oty_wage_pct, is_suppressed.
-
-    Counties with no total-covered data are omitted. Shared by the Upper
-    Peninsula county map and the top-counties growth chart.
+    total-covered row, and its first row from that quarter is used. Returns
+    columns county_name, area_fips, year, qtr, employment, qtrly_estabs,
+    avg_annual_wage, oty_emp_pct, oty_estab_pct, oty_wage_pct, and
+    is_suppressed. The three oty_* values come from BLS's over-the-year
+    percent-change columns and are None if a column is missing. Returns an
+    empty DataFrame if there are no total-covered rows at all.
     """
     totals = get_total_covered(df)
     if totals.empty:
@@ -144,8 +171,16 @@ def latest_county_summaries(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# Returns the latest-quarter private NAICS sectors that have valid YoY
+# employment and wage growth. This is the data behind the industry growth
+# quadrant (bubble) chart.
 def get_growth_quadrant_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Latest-quarter NAICS sectors with valid YoY employment + wage growth rates."""
+    """Take the latest quarter of get_naics_sectors(df, own_code=5) and filter it.
+
+    Keeps rows that are not suppressed, are not labeled "Unclassified", have
+    employment above zero, and have non-null oty_month3_emplvl_pct_chg and
+    oty_avg_wkly_wage_pct_chg values. Returns a copy.
+    """
     sectors = get_latest_quarter(get_naics_sectors(df, own_code=5))
     return sectors[
         (~sectors["is_suppressed"])
@@ -161,10 +196,14 @@ def get_growth_quadrant_data(df: pd.DataFrame) -> pd.DataFrame:
 # the latest values of FRED + IRS series per county.
 
 
+# Returns one county's latest annual real GDP (in billions) and its YoY growth
+# rate. Returns {} when fewer than 2 observations exist (can't compute YoY).
 def latest_gdp_with_growth(df_gdp: pd.DataFrame, county_name: str) -> dict:
-    """Latest annual real GDP and YoY growth rate for one county.
+    """Filter df_gdp to the county, sort by date, and compare the last two rows.
 
-    Returns {} when fewer than 2 observations exist (can't compute YoY).
+    value_billions is the latest value divided by 1,000,000 (FRED reports
+    thousands of dollars). yoy_growth is (latest - prior) / prior as a
+    fraction, so 0.03 means 3%. year is the latest observation's year.
     """
     if df_gdp.empty:
         return {}
@@ -180,16 +219,19 @@ def latest_gdp_with_growth(df_gdp: pd.DataFrame, county_name: str) -> dict:
     }
 
 
+# Returns one county's latest monthly unemployment rate and its change from the
+# same month a year earlier, in percentage points. Returns {} if the
+# prior-year month is missing, so the KPI cell falls back to "—".
 def latest_unrate_with_yoy(df_unrate: pd.DataFrame, county_name: str) -> dict:
-    """Latest monthly unemployment rate + YoY pp delta for one county.
+    """Take the county's last row, then find its same-month-one-year-prior row by date.
 
     The FRED LAUS series for these counties are NSA (not seasonally adjusted),
     so YoY uses a same-month-one-year-prior comparison. Matching is by
     month-precision date (to_period("M")) rather than positional indexing,
     so a gap in the monthly series — e.g., the Oct 2025 FRED outage caused
     by the BLS appropriations lapse — never silently shifts the comparison
-    window. If the prior-year same month is missing, returns {} so the cell
-    falls back to "—".
+    window. Returns rate, yoy_delta_pp, and month_label (formatted like
+    "Mar 2026").
     """
     if df_unrate.empty:
         return {}
@@ -209,12 +251,16 @@ def latest_unrate_with_yoy(df_unrate: pd.DataFrame, county_name: str) -> dict:
     }
 
 
+# Returns one county's most recent IRS net migration figure (US and foreign
+# combined), along with both years of the migration window. Returns {} if the
+# county has no row.
 def latest_irs_net(df_irs: pd.DataFrame, county_name: str) -> dict:
-    """Most recent IRS SOI net migration figure (US + Foreign) for one county.
+    """Take the county's first row in df_irs and derive the two window years.
 
-    Returns both endpoints of the migration window (origin_year, dest_year) so
-    the display can label the figure as a two-year flow rather than collapsing
-    it to a single year. tax_year is retained for backward compatibility.
+    dest_year is the row's tax_year, and origin_year is one year earlier, so
+    the display can label the figure as a two-year flow rather than
+    collapsing it to a single year. Returns net_exemptions, tax_year (retained
+    for backward compatibility), origin_year, and dest_year.
     """
     if df_irs.empty:
         return {}
@@ -231,18 +277,22 @@ def latest_irs_net(df_irs: pd.DataFrame, county_name: str) -> dict:
     }
 
 
+# Returns one quarter's private-sector employment by NAICS sector, for the
+# treemap. Uses the latest quarter available by default, or the latest quarter
+# within a given year.
 def get_employment_treemap_data(
     df: pd.DataFrame, year: Optional[int] = None
 ) -> pd.DataFrame:
-    """Treemap snapshot for one quarter.
+    """Filter to disclosable private sectors, pick one quarter, and add each sector's share.
 
-    `year=None` returns the absolute latest quarter (the default behavior).
-    `year=YYYY` returns the latest quarter within that year.
-
-    Filters to own_code=5 (private), drops suppressed/Unclassified rows and
-    sectors with zero employment. Returns industry_label, employment,
-    qtrly_estabs, avg_annual_wage, share, year, qtr — one row per disclosable
-    sector, sorted by employment desc.
+    Keeps own_code=5 rows that are not suppressed, not "Unclassified", and
+    have employment above zero. With year=None it keeps the latest quarter
+    overall; with year=YYYY it keeps the latest quarter within that year and
+    returns an empty DataFrame if that year has no rows. share is each
+    sector's employment divided by the sum across the remaining sectors, so
+    shares add up to 1 over disclosable sectors, not over the whole county.
+    Returns industry_label, employment, qtrly_estabs, avg_annual_wage, share,
+    year, and qtr, sorted by employment descending.
     """
     sectors = get_naics_sectors(df, own_code=5)
     sectors = sectors[
@@ -278,8 +328,10 @@ def get_employment_treemap_data(
     )
 
 
+# Returns a list of (year, latest_quarter) pairs, oldest first, for every year
+# that has disclosable private-sector data.
 def get_employment_treemap_years(df: pd.DataFrame) -> list[tuple[int, int]]:
-    """Return [(year, latest_qtr_for_year), ...] ascending for years with disclosable data."""
+    """Apply the treemap's sector filters, then take the maximum qtr within each year."""
     sectors = get_naics_sectors(df, own_code=5)
     sectors = sectors[
         (~sectors["is_suppressed"])
@@ -292,13 +344,14 @@ def get_employment_treemap_years(df: pd.DataFrame) -> list[tuple[int, int]]:
     return [(int(r["year"]), int(r["qtr"])) for _, r in yq.iterrows()]
 
 
+# Returns every (year, latest_quarter, treemap DataFrame) snapshot, oldest
+# first. Callers that want only the most recent snapshot use snapshots[-1].
 def get_treemap_snapshots(df: pd.DataFrame) -> list:
-    """All (year, latest-qtr, treemap-data) snapshots, ascending by year.
+    """Loop over get_employment_treemap_years and build each year's treemap data.
 
     Returns a list of (int, int, pd.DataFrame) tuples. Years whose snapshot is
     empty (e.g., universally suppressed) are dropped so the caller never has
-    to render a button with no underlying data. Callers that want the most
-    recent snapshot use `snapshots[-1]`.
+    to render a button with no underlying data.
     """
     years_asc = get_employment_treemap_years(df)
     snapshots = []
@@ -309,18 +362,20 @@ def get_treemap_snapshots(df: pd.DataFrame) -> list:
     return snapshots
 
 
+# Returns the U.S. quarter-over-quarter percent change in establishment count
+# for one ownership type, as a date-indexed Series. It is the national
+# benchmark for the county firm-formation chart.
 def get_national_qoq_pct(df_national: pd.DataFrame, own_code: int = 5) -> pd.Series:
-    """U.S. quarterly QoQ percent change in establishment count for one ownership type.
+    """Filter the raw national data to own_code, then take the pct change of qtrly_estabs.
 
     Defaults to private (own_code=5) so the firm-formation benchmark is
     apples-to-apples with the county's private-only industry data. Pass
     own_code=0 to get the all-ownership total covered series. Input is
     expected to contain both ownership slices per fetch_national_data's
     expanded filter — older caches without the requested slice return an
-    empty Series and downstream consumers degrade gracefully.
-
-    Returns a date-indexed Series of pct change in qtrly_estabs; the first
-    quarter drops out (no prior).
+    empty Series and downstream consumers degrade gracefully. Otherwise it
+    adds the date column, sorts by date, indexes by date, and drops the first
+    quarter (which has no prior to compare with).
     """
     if df_national.empty or "qtrly_estabs" not in df_national.columns:
         return pd.Series(dtype=float)
@@ -331,8 +386,13 @@ def get_national_qoq_pct(df_national: pd.DataFrame, own_code: int = 5) -> pd.Ser
     return df["qtrly_estabs"].pct_change().dropna()
 
 
+# Returns, for each quarter, how many establishments were added across
+# industries, how many were lost, and the county's net change. This is the
+# data behind the firm-formation chart. It is the county-private establishment
+# change with an industry-level breakdown, not gross firm openings and
+# closings (BLS doesn't publish those at the county level).
 def get_firm_formation_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Quarterly establishment churn decomposed into industries gaining and losing firms.
+    """Compute per-industry quarterly changes, sum them into bars, and join the true net.
 
     For each (industry, quarter), compute the QoQ change in `qtrly_estabs`
     at (own_code=5, agglvl=74). Then aggregate per quarter:
@@ -346,13 +406,11 @@ def get_firm_formation_data(df: pd.DataFrame) -> pd.DataFrame:
     is a single unsuppressed row per quarter. The visible gap between the
     stacked bars and the net line is the suppression effect.
 
-    Returns a DataFrame indexed by quarter with columns date, year_qtr, additions,
-    subtractions, net. The first quarter in the input series is dropped (no QoQ
-    change available).
-
-    Note: this is *not* gross firm openings/closings (BLS doesn't publish those at
-    the county level). It's the county-private establishment change, with an
-    industry-level decomposition layered on top.
+    Suppressed, "Unclassified", and null-estabs sectors are excluded before
+    the deltas are computed. The bars are merged with net on date, and the
+    first quarter in the input series is dropped (no QoQ change available).
+    Returns a DataFrame with a default integer index, sorted by date, with
+    columns date, year_qtr, additions, subtractions, and net.
     """
     sectors = get_naics_sectors(df, own_code=5)
     sectors = sectors[
