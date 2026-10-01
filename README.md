@@ -5,7 +5,7 @@
 
 An interactive dashboard tracking employment, wages, firm formation, and industry composition across the 15 counties of Michigan's Upper Peninsula.
 
-**Live dashboard:** https://joshuaingber.github.io/upper-peninsula-economic-report/
+**Live dashboard:** https://humble-lamp-wv55gjwqj5pqfv95j-8000.app.github.dev/
 
 ## What it is
 
