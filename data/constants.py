@@ -9,6 +9,8 @@ follows the Northern Michigan University palette.
 """
 from datetime import date
 
+from anyio import Path
+
 # ── BLS QCEW API ──────────────────────────────────────────────────────────────
 BLS_BASE_URL = "https://data.bls.gov/cew/data/api/{year}/{quarter}/area/{fips}.csv"
 
@@ -209,6 +211,7 @@ AGGLVL_US_BY_OWN = 11      # U.S. total by ownership; rows for own_codes 1, 2, 3
 
 FRED_API_BASE = "https://api.stlouisfed.org/fred"
 
+
 # Real GDP series (annual, thousands of chained 2017 dollars). BEA publishes
 # real GDP for every county; FRED mirrors it as REALGDPALL{5-digit FIPS}, so
 # the series IDs are fully FIPS-derivable.
@@ -317,3 +320,4 @@ NUMERIC_COLS = [
     "oty_avg_wkly_wage_chg", "oty_avg_wkly_wage_pct_chg",
 ]
 
+CACHE_DIR = Path(__file__).parent / "cache"

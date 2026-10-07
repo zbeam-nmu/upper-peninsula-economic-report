@@ -12,6 +12,7 @@ import pandas as pd
 from data.fetch import fetch_all_data
 from data.fetch_fred import fetch_real_gdp, fetch_unemployment_rate
 from data.fetch_irs_migration import fetch_irs_migration
+from data.fetch_Census_housing import get_up_housing
 from data.clean import (
     clean, get_total_covered, get_latest_quarter,
     latest_gdp_with_growth, latest_unrate_with_yoy, latest_irs_net,
@@ -188,6 +189,12 @@ if raw_df.empty:
     st.stop()
 
 df = clean(raw_df)
+
+try:
+    housing_df = get_up_housing()
+except Exception as e:
+    st.warning(f"Housing data could not be loaded: {e}")
+    housing_df = pd.DataFrame()
 
 # Secondary KPI data sources — fetched once at module load (cache-hot after the
 # first run). Each loader returns an empty DataFrame on missing key/network

@@ -38,7 +38,7 @@ from data.constants import FRED_API_BASE, FRED_GDP_SERIES, FRED_UNRATE_SERIES
 # The cache is a fallback, not a short-circuit: we always try a fresh fetch
 # first, and only fall back to the last-good cache if that fails. Fresh fetches
 # overwrite the cache, so the fallback stays current between outages.
-CACHE_DIR = Path(__file__).parent / "cache"
+from data.constants import CACHE_DIR
 GDP_CACHE = CACHE_DIR / "qcew_fred_gdp.parquet"
 UNRATE_CACHE = CACHE_DIR / "qcew_fred_unrate.parquet"
 
