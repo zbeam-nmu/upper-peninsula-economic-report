@@ -361,6 +361,90 @@ def get_treemap_snapshots(df: pd.DataFrame) -> list:
             snapshots.append((year, qtr, snap))
     return snapshots
 
+# Returns one annual-average private-sector industry snapshot per complete
+# year, summed across every county in df, as (year, plot_data) tuples oldest
+# first. This is the UP-wide counterpart to get_treemap_snapshots, which
+# assumes a single county's rows.
+def get_up_industry_snapshots(df: pd.DataFrame) -> list:
+    """Apply these steps in order.
+
+    1. Take the private NAICS sector rows from get_naics_sectors(df, own_code=5)
+       and drop rows that are suppressed or labeled "Unclassified", the same
+       exclusions the treemap uses.
+    2. Average each row's three monthly employment levels into emplvl. This is
+       not the `employment` column, which is only the quarter's third month.
+       Rows with emplvl of zero or less are dropped.
+    3. Keep only complete years: the private all-industries total (agglvl 71)
+       must have a row for every county in COUNTIES in all four quarters, so a
+       year with a failed BLS request never shows partial sums.
+    4. For each complete year, sum emplvl, qtrly_estabs, and total_qtrly_wages
+       by industry across counties and quarters. Employment and establishments
+       are divided by 4 to give annual averages. avg_annual_wage is total
+       wages divided by average employment, so large counties weigh more than
+       small ones.
+    5. Set share to each industry's average employment over the private
+       all-industries average employment (agglvl 71), falling back to the sum
+       of the sectors if that total is missing.
+
+    Returns a list of (int, pd.DataFrame) tuples with columns industry_label,
+    employment, share, qtrly_estabs, and avg_annual_wage, each sorted by
+    employment descending. Years with an empty snapshot are dropped.
+    """
+    sectors = get_naics_sectors(df, own_code=5).copy()
+    sectors["emplvl"] = sectors[
+        ["month1_emplvl", "month2_emplvl", "month3_emplvl"]
+    ].mean(axis=1)
+    sectors = sectors[
+        (~sectors["is_suppressed"])
+        & (sectors["industry_label"] != "Unclassified")
+        & (sectors["emplvl"] > 0)
+    ]
+
+    totals = df[
+        (df["own_code"] == 5) & (df["agglvl_code"] == AGGLVL_TOTAL_BY_OWN)
+    ].copy()
+    totals["emplvl"] = totals[
+        ["month1_emplvl", "month2_emplvl", "month3_emplvl"]
+    ].mean(axis=1)
+
+    # A year is complete when every county has a total row in all four quarters
+    county_quarters = (
+        totals.drop_duplicates(["year", "county_name", "qtr"]).groupby("year").size()
+    )
+    complete_years = county_quarters[county_quarters == len(COUNTIES) * 4].index
+
+    snapshots = []
+    for year in sorted(complete_years):
+        annual = (
+            sectors[sectors["year"] == year]
+            .groupby("industry_label", as_index=False)
+            .agg(
+                employment=("emplvl", "sum"),
+                qtrly_estabs=("qtrly_estabs", "sum"),
+                wages=("total_qtrly_wages", "sum"),
+            )
+        )
+        if annual.empty:
+            continue
+
+        annual["employment"] = annual["employment"] / 4
+        annual["qtrly_estabs"] = annual["qtrly_estabs"] / 4
+        annual["avg_annual_wage"] = annual["wages"] / annual["employment"]
+
+        # Private all-industries average employment; fall back to the sector sum
+        total_employment = totals.loc[totals["year"] == year, "emplvl"].sum() / 4
+        annual["share"] = annual["employment"] / (
+            total_employment or annual["employment"].sum()
+        )
+
+        plot_data = (
+            annual[["industry_label", "employment", "share", "qtrly_estabs", "avg_annual_wage"]]
+            .sort_values("employment", ascending=False)
+            .reset_index(drop=True)
+        )
+        snapshots.append((int(year), plot_data))
+
+    return snapshots
 
 # Returns the U.S. quarter-over-quarter percent change in establishment count
 # for one ownership type, as a date-indexed Series. It is the national
