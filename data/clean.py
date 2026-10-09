@@ -16,6 +16,7 @@ from data.constants import (
     AGGLVL_TOTAL,
     AGGLVL_TOTAL_BY_OWN,
     AGGLVL_NAICS_SECTOR,
+    COUNTIES,
 )
 
 
