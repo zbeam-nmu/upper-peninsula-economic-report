@@ -1,3 +1,6 @@
+# If you want to open the app locally, run `streamlit run app.py` in the terminal. 
+# You may need to install dependencies first with `pip install -r requirements.txt`.
+
 """
 Upper Peninsula Regional Economic Report
 Built with Streamlit + Plotly using BLS QCEW data.
