@@ -9,7 +9,7 @@ follows the Northern Michigan University palette.
 """
 from datetime import date
 
-from anyio import Path
+from pathlib import Path
 
 # ── BLS QCEW API ──────────────────────────────────────────────────────────────
 BLS_BASE_URL = "https://data.bls.gov/cew/data/api/{year}/{quarter}/area/{fips}.csv"
