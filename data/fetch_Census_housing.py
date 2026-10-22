@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 
 import pandas as pd
 import requests
 
-from data.constants import CACHE_DIR, COUNTIES, STATE_FIPS, YEARS
-
+from data.constants import COUNTIES, STATE_FIPS, ACS_YEARS, ACS_BASE_URL, HOUSING_VARIABLES, ACS_CACHE_PATH
 # Load a local .env (CENSUS_API_KEY=...) if present, so contributors don't have to
 # export the variable by hand. Optional: if python-dotenv isn't installed, or no
 # .env exists, we fall back to whatever is already in the environment.
@@ -19,22 +19,9 @@ try:
 except ImportError:
     pass
 
-# Placeholders: move these into constants.py
-ACS_BASE_URL = "https://api.census.gov/data/{year}/acs/acs5"
-HOUSING_VARIABLES = {
-    "B25001_001E": "housing_units",
-    "B25002_002E": "occupied_units",
-    "B25002_003E": "vacant_units",
-    "B25003_002E": "owner_occupied",
-    "B25003_003E": "renter_occupied",
-    "B25077_001E": "median_home_value",
-    "B25064_001E": "median_gross_rent",
-}
-CACHE_PATH = Path(CACHE_DIR) / "up_housing.parquet"
-
 
 # Returns ACS housing characteristics for every UP county and year as one DataFrame, cached as parquet.
-def get_up_housing(refresh=False, cache_path=CACHE_PATH):
+def get_up_housing(refresh=False, cache_path=ACS_CACHE_PATH):
     """Returns the parquet file at cache_path if it exists, unless refresh=True.
     Otherwise it makes one ACS 5-year request per year in YEARS, asking for all
     counties in COUNTIES at once (the county codes are the last three digits of
@@ -52,7 +39,7 @@ def get_up_housing(refresh=False, cache_path=CACHE_PATH):
     county_codes = ",".join(fips[2:] for fips in COUNTIES)
     frames = []
 
-    for year in YEARS:
+    for year in ACS_YEARS:
         params = {
             "get": ",".join(HOUSING_VARIABLES),
             "for": f"county:{county_codes}",
@@ -87,3 +74,15 @@ def get_up_housing(refresh=False, cache_path=CACHE_PATH):
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(cache_path, index=False)
     return out
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Fetch ACS housing data for UP counties.")
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Fetch current Census data instead of using the cached file.",
+    )
+    args = parser.parse_args()
+    housing = get_up_housing(refresh=args.refresh)
+    print(f"Loaded {len(housing)} rows from {ACS_CACHE_PATH}")

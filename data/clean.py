@@ -530,3 +530,20 @@ def get_firm_formation_data(df: pd.DataFrame) -> pd.DataFrame:
         .sort_values("date")
         .reset_index(drop=True)
     )
+
+
+## WORK IN PROGRESS ##
+
+# loads the up_housing.parquet into a pd.Dataframe and drops row for a county if data is missing.
+# Returns a df with features: housing_units, occupied_units, vacant_units, Owner_occupied, renter_occupied
+#, median_home_value, median_gross_rent, year, fips, and county name.
+# Df will then be used to support housing_data embeds
+def clean_housing_data(df: pd.DataFrame) -> pd.Dataframe:
+    for i in range(len(df)):
+        for j in range(df.columns.size()):
+            if df[i,j] == None:
+                df.drop(i)
+                print(f"Dropped row: ", i)
+                break
+
+    return(df)
