@@ -16,3 +16,6 @@
     - website: https://www.census.gov/data/developers/data-sets/acs-5year.html
     - data: https://www.census.gov/acs/www/data/data-tables-and-tools/data-profiles/
     - contents: could be used to track housing prices of time, total units, occupied vs vacant, owner vs renter, seasonal/recreational/occasional vs year-around units
+
+## Fixes
+- clean.py clean_qcew_data_for_AI_risk_embed() getting sum of month3_emplvl of the latest quarter

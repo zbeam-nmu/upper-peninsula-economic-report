@@ -133,3 +133,16 @@ def deseasonalize_trend(
     result = STL(work, period=period, seasonal=seasonal, robust=True).fit()
     trend = np.exp(result.trend) if log_transform else result.trend
     return trend.reindex(series.index)
+
+# function takes risk_score from cleaned MIT_AI_safety_sector_rating.csv
+# and number of workers from qcew_data.parquet, and returns a df with features: target_code, risk_score, number_of_workers.
+# Then creates a new column called weighted_score which is the product of risk_score and number_of_workers.
+def merge_mit_ai_safety_sector_rating_with_qcew(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
+    df = df1.merge(
+        df2,
+        how="inner",
+        on="target_code",
+        validate="one_to_many",
+    )
+    df["weighted_score"] = df["risk_score"] * df["number_of_workers"]
+    return df

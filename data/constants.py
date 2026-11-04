@@ -44,6 +44,30 @@ START_ACS_YEAR = 2009
 END_ACS_YEAR = date.today().year - 2
 ACS_YEARS = list(range(START_ACS_YEAR, END_ACS_YEAR + 1))
 
+# --- MIT_AI_safety_sector_rating.csv ---------------------------------------------
+SECTOR_RATING_CSV_PATH = Path(CACHE_DIR) / "MIT_AI_safety_sector_rating.csv"
+
+# Mapping were made by checking MIT AI Risk taxonomy.
+# https://airisk.mit.edu/navigator#/taxonomies
+TARGET_CODE_TO_NAICS = {
+    "Agriculture": ["11", "21", "22", "23", "31", "32", "33"],
+    "Trade": ["42", "44", "45", "48", "49"],
+    "Information": ["51"],
+    "Finance": ["52"],
+    "Real_Estate": ["53"],
+    "Professional": ["5411", "5416", "5418", "5419"],
+    "Scientific": ["5417"],
+    "Management": ["55", "56"],
+    "Education": ["61"],
+    "Health_Care": ["62"],
+    "Arts": ["71"],
+    "Accommodation": ["72", "81"],
+    "Public_Admin": ["921", "922", "923", "924", "925", "926", "927"],
+    "National_Security": ["928"]
+}
+
+
+
 # ── Counties ──────────────────────────────────────────────────────────────────
 # The 15 counties of Michigan's Upper Peninsula (state FIPS 26). Ordered
 # geographically west → east so dropdowns and legends read sensibly.

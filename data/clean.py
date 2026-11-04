@@ -16,7 +16,9 @@ from data.constants import (
     AGGLVL_TOTAL,
     AGGLVL_TOTAL_BY_OWN,
     AGGLVL_NAICS_SECTOR,
+    AGGLVL_NAICS_4DIGIT,
     COUNTIES,
+    TARGET_CODE_TO_NAICS
 )
 
 
@@ -547,3 +549,100 @@ def clean_housing_data(df: pd.DataFrame) -> pd.Dataframe:
                 break
 
     return(df)
+
+# Keeps sector vulnerability ratings and averages the median score for each
+# target code. The resulting scores are joined to county employment below.
+def clean_mit_ai_safety_sector_rating(df: pd.DataFrame) -> pd.DataFrame:
+    ratings = df[
+        (df["target_type"] == "sector")
+        & (df["criterion"] == "vulnerability")
+    ]
+    return (
+        ratings.groupby("target_code", as_index=False)
+        .agg(risk_score=("median", "mean"))
+    )
+
+# Aggregates latest-quarter QCEW employment into the MIT rating categories.
+def clean_qcew_data_for_AI_risk_embed(df: pd.DataFrame) -> pd.DataFrame:
+    result_columns = ["county_name", "target_code", "number_of_workers"]
+    if df.empty:
+        return pd.DataFrame(columns=result_columns)
+
+    required_columns = {
+        "county_name",
+        "year",
+        "qtr",
+        "agglvl_code",
+        "industry_code",
+        "month3_emplvl",
+    }
+    missing_columns = required_columns.difference(df.columns)
+    if missing_columns:
+        raise ValueError(
+            "QCEW data is missing required columns: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    quarter_keys = df[["year", "qtr"]].apply(pd.to_numeric, errors="coerce")
+    valid_quarters = quarter_keys.dropna().sort_values(["year", "qtr"])
+    if valid_quarters.empty:
+        raise ValueError("QCEW data has no valid year/quarter values")
+    latest = valid_quarters.iloc[-1]
+    latest_mask = quarter_keys["year"].eq(latest["year"]) & quarter_keys["qtr"].eq(
+        latest["qtr"]
+    )
+    latest_df = df.loc[latest_mask].copy()
+    latest_df["agglvl_code"] = pd.to_numeric(
+        latest_df["agglvl_code"], errors="coerce"
+    )
+    latest_df["industry_code"] = latest_df["industry_code"].astype("string").str.strip()
+    latest_df["month3_emplvl"] = pd.to_numeric(
+        latest_df["month3_emplvl"], errors="coerce"
+    )
+
+    # Use 2-digit sector totals where a rating maps to a whole sector. For
+    # ratings that split NAICS 54 or 92, use 4-digit rows to avoid assigning
+    # the same employment to both rating categories.
+    detailed_targets = {
+        "Professional",
+        "Scientific",
+        "Public_Admin",
+        "National_Security",
+    }
+    combined_codes = {
+        "31-33": {"31", "32", "33"},
+        "44-45": {"44", "45"},
+        "48-49": {"48", "49"},
+    }
+    grouped = []
+
+    for target_code, naics_codes in TARGET_CODE_TO_NAICS.items():
+        aggregation_level = (
+            AGGLVL_NAICS_4DIGIT
+            if target_code in detailed_targets
+            else AGGLVL_NAICS_SECTOR
+        )
+        sectors = latest_df.loc[latest_df["agglvl_code"] == aggregation_level].copy()
+        matches = sectors["industry_code"].str.startswith(
+            tuple(naics_codes), na=False
+        )
+        if aggregation_level == AGGLVL_NAICS_SECTOR:
+            matches |= sectors["industry_code"].map(
+                lambda code: bool(combined_codes.get(code, set()) & set(naics_codes))
+            )
+        sectors = sectors.loc[matches, ["county_name", "month3_emplvl"]].copy()
+        if sectors.empty:
+            continue
+        sectors["target_code"] = target_code
+        grouped.append(sectors)
+
+    if not grouped:
+        return pd.DataFrame(columns=result_columns)
+
+    employment = pd.concat(grouped, ignore_index=True)
+    return (
+        employment.groupby(["county_name", "target_code"])["month3_emplvl"]
+        .sum(min_count=1)
+        .rename("number_of_workers")
+        .reset_index()
+    )

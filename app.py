@@ -16,9 +16,12 @@ from data.fetch import fetch_all_data
 from data.fetch_fred import fetch_real_gdp, fetch_unemployment_rate
 from data.fetch_irs_migration import fetch_irs_migration
 from data.fetch_Census_housing import get_up_housing
+from data.analysis import (
+    merge_mit_ai_safety_sector_rating_with_qcew
+)
 from data.clean import (
     clean, get_total_covered, get_latest_quarter,
-    latest_gdp_with_growth, latest_unrate_with_yoy, latest_irs_net,
+    latest_gdp_with_growth, latest_unrate_with_yoy, latest_irs_net, clean_mit_ai_safety_sector_rating, clean_qcew_data_for_AI_risk_embed
 )
 from data.constants import (
     FAU_BLUE, FAU_RED, FAU_DARK_GRAY, FAU_GRAY, FAU_ELECTRIC_BLUE,
@@ -35,6 +38,7 @@ from components.growth_quadrant import render as render_growth_quadrant
 from components.firm_formation import render as render_firm_formation
 from components.employment_treemap import render as render_employment_treemap
 from components.housing_median_value_tseries import render as render_housing_median_value_tseries
+from components.county_AI_risk_score import render_county_ai_risk_score_hist
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -194,11 +198,20 @@ if raw_df.empty:
 
 df = clean(raw_df)
 
+# ── Load secondary data sources ─────────────────────────────────────────────
+
+# up_housing_df
 try:
     housing_df = get_up_housing()
 except Exception as e:
     st.warning(f"Housing data could not be loaded: {e}")
     housing_df = pd.DataFrame()
+
+# MIT AI Safety Sector Rating data
+mit_ai_safety_df = clean_mit_ai_safety_sector_rating(pd.read_csv("/workspaces/upper-peninsula-economic-report/data/cache/MIT_AI_safety_sector_rating"))
+qcew_data_for_ai_risk_df = clean_qcew_data_for_AI_risk_embed(raw_df)
+
+mit_ai_risk_merged_df = merge_mit_ai_safety_sector_rating_with_qcew(mit_ai_safety_df, qcew_data_for_ai_risk_df)
 
 # Secondary KPI data sources — fetched once at module load (cache-hot after the
 # first run). Each loader returns an empty DataFrame on missing key/network
@@ -399,6 +412,10 @@ def _render_county_tab(county_df: pd.DataFrame, county_name: str, housing_df: pd
     # Workforce Composition
     st.divider()
     render_employment_treemap(county_df)
+
+    # AI Risk Score Distribution weighted by number of workers in each sector
+    st.divider()
+    render_county_ai_risk_score_hist(mit_ai_risk_merged_df, county_name)
 
     # Industry Landscape
     st.divider()
