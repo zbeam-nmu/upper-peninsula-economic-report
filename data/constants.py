@@ -11,6 +11,9 @@ from datetime import date
 
 from pathlib import Path
 
+# Cache_Dir path ──────────────────────────────────────────────────────────────
+CACHE_DIR = Path(__file__).parent / "cache"
+
 # ── BLS QCEW API ──────────────────────────────────────────────────────────────
 BLS_BASE_URL = "https://data.bls.gov/cew/data/api/{year}/{quarter}/area/{fips}.csv"
 
@@ -19,6 +22,27 @@ START_YEAR = 2019
 END_YEAR = date.today().year
 YEARS = list(range(START_YEAR, END_YEAR + 1))
 QUARTERS = [1, 2, 3, 4]
+
+# US Census Bureau ACS 5-year API ──────────────────────────────────────────────────────────────
+ACS_BASE_URL = "https://api.census.gov/data/{year}/acs/acs5"
+
+# variables for housing data
+HOUSING_VARIABLES = {
+    "B25001_001E": "housing_units",
+    "B25002_002E": "occupied_units",
+    "B25002_003E": "vacant_units",
+    "B25003_002E": "owner_occupied",
+    "B25003_003E": "renter_occupied",
+    "B25077_001E": "median_home_value",
+    "B25064_001E": "median_gross_rent",
+}
+
+ACS_CACHE_PATH = Path(CACHE_DIR) / "up_housing.parquet"
+
+# Year range:
+START_ACS_YEAR = 2009
+END_ACS_YEAR = date.today().year - 2
+ACS_YEARS = list(range(START_ACS_YEAR, END_ACS_YEAR + 1))
 
 # ── Counties ──────────────────────────────────────────────────────────────────
 # The 15 counties of Michigan's Upper Peninsula (state FIPS 26). Ordered
@@ -319,5 +343,3 @@ NUMERIC_COLS = [
     "oty_qtrly_contributions_chg", "oty_qtrly_contributions_pct_chg",
     "oty_avg_wkly_wage_chg", "oty_avg_wkly_wage_pct_chg",
 ]
-
-CACHE_DIR = Path(__file__).parent / "cache"
