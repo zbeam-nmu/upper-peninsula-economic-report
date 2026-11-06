@@ -94,14 +94,9 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["county_name", "date", "industry_code"]).reset_index(drop=True)
 
     # Industry labels — merge supersector domain codes + NAICS sector labels
-    df["industry_code"] = df["industry_code"].astype("string").str.strip()
-
     df["industry_label"] = df["industry_code"].map(SUPERSECTOR_DOMAIN_CODES)
-
     naics_mask = df["industry_label"].isna()
-    df.loc[naics_mask, "industry_label"] = (
-        df.loc[naics_mask, "industry_code"].map(SUPERSECTOR_LABELS)
-    )
+    df.loc[naics_mask, "industry_label"] = df.loc[naics_mask, "industry_code"].map(SUPERSECTOR_LABELS)
 
     # Fallback: use industry_code itself if no label found
     still_missing = df["industry_label"].isna()
@@ -213,17 +208,7 @@ def latest_gdp_with_growth(df_gdp: pd.DataFrame, county_name: str) -> dict:
     """
     if df_gdp.empty:
         return {}
-    if county_name == "Upper Peninsula":
-        sub = (
-            df_gdp.groupby("date", as_index=False)["value"]
-            .sum()
-            .sort_values("date")
-    )
-    else:
-        sub = (
-            df_gdp[df_gdp["county_name"] == county_name]
-            .sort_values("date")
-    )
+    sub = df_gdp[df_gdp["county_name"] == county_name].sort_values("date")
     if len(sub) < 2:
         return {}
     latest = sub.iloc[-1]
@@ -251,22 +236,9 @@ def latest_unrate_with_yoy(df_unrate: pd.DataFrame, county_name: str) -> dict:
     """
     if df_unrate.empty:
         return {}
-    if county_name == "Upper Peninsula":
-        sub = df_unrate[df_unrate["county_name"] != "Upper Peninsula"].copy()
-
-        # Calculate the simple average county unemployment rate for each month
-        sub = (
-            sub.groupby("date", as_index=False)["value"]
-            .mean()
-        )
-    else:
-        sub = (
-            df_unrate[df_unrate["county_name"] == county_name]
-            .sort_values("date")
-        )
+    sub = df_unrate[df_unrate["county_name"] == county_name].sort_values("date")
     if sub.empty:
         return {}
-    sub = sub.sort_values("date")
     latest = sub.iloc[-1]
     target_period = (latest["date"] - pd.DateOffset(years=1)).to_period("M")
     prior_matches = sub[sub["date"].dt.to_period("M") == target_period]
@@ -275,7 +247,7 @@ def latest_unrate_with_yoy(df_unrate: pd.DataFrame, county_name: str) -> dict:
     prior = prior_matches.iloc[0]
     return {
         "rate": float(latest["value"]),
-        "yoy_delta_pp": (float(latest["value"]) - float(prior["value"])),
+        "yoy_delta_pp": float(latest["value"]) - float(prior["value"]),
         "month_label": latest["date"].strftime("%b %Y"),
     }
 
@@ -293,16 +265,7 @@ def latest_irs_net(df_irs: pd.DataFrame, county_name: str) -> dict:
     """
     if df_irs.empty:
         return {}
-
-    if county_name == "Upper Peninsula":
-        sub = (
-            df_irs.groupby("tax_year", as_index=False)["net_exemptions"]
-            .sum()
-            .sort_values("tax_year", ascending=False)
-        )
-    else:
-        sub = df_irs[df_irs["county_name"] == county_name]
-
+    sub = df_irs[df_irs["county_name"] == county_name]
     if sub.empty:
         return {}
     row = sub.iloc[0]
