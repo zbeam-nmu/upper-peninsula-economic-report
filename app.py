@@ -20,6 +20,9 @@ from data.clean import (
     clean, get_total_covered, get_latest_quarter,
     latest_gdp_with_growth, latest_unrate_with_yoy, latest_irs_net,
 )
+
+from data.aggregate_dataframe import get_aggregate_data
+
 from data.constants import (
     FAU_BLUE, FAU_RED, FAU_DARK_GRAY, FAU_GRAY, FAU_ELECTRIC_BLUE,
     FAU_SKY_BLUE, COUNTY_COLORS, COUNTIES,
@@ -279,11 +282,17 @@ def _county_snapshot_card(
         return f'<div class="kpi-delta {css_class}">{arrow} {abs(pct):.1f}% YoY</div>'
 
     secondary = secondary or {}
-    secondary_html = _secondary_row_html(secondary)
+    secondary_html = _secondary_row_html(secondary, county_name)
+    display_name = (
+    "Upper Peninsula"
+    if county_name == "Upper Peninsula"
+    else f"{county_name} County"
+    )
+
 
     st.markdown(f"""
     <div class="county-card" style="border-left-color: {color};">
-        <h3 style="color: {color};">{county_name} County</h3>
+        <h3 style="color: {color};">{display_name}</h3>
         <div class="kpi-row">
             <div class="kpi-item">
                 <div class="kpi-label">Employment</div>
@@ -311,11 +320,16 @@ def _county_snapshot_card(
     """, unsafe_allow_html=True)
 
 
-def _secondary_row_html(secondary: dict) -> str:
+def _secondary_row_html(secondary: dict, county_name: str) -> str:
     """Build the second KPI row HTML — GDP + Unemployment + Net Migration."""
     gdp = secondary.get("gdp") or {}
     unr = secondary.get("unrate") or {}
     irs = secondary.get("irs") or {}
+
+    if county_name == "Upper Peninsula":
+        unr_label = "Simple Average Unemployment Rate"
+    else:
+        unr_label = "Unemployment Rate"
 
     # GDP cell: level + YoY growth (positive = good)
     if gdp:
@@ -360,7 +374,7 @@ def _secondary_row_html(secondary: dict) -> str:
         f'<div class="kpi-row secondary">'
         f'<div class="kpi-item"><div class="kpi-label">Real GDP</div>'
         f'<div class="kpi-value">{gdp_value}</div>{gdp_delta}{gdp_period}</div>'
-        f'<div class="kpi-item"><div class="kpi-label">Unemployment rate</div>'
+        f'<div class="kpi-item"><div class="kpi-label">{unr_label}</div>'
         f'<div class="kpi-value">{unr_value}</div>{unr_delta}{unr_period}</div>'
         f'<div class="kpi-item"><div class="kpi-label">Net Migration</div>'
         f'<div class="kpi-value">{irs_value}</div>{irs_delta}{irs_period}</div>'
@@ -416,16 +430,22 @@ st.markdown("### County Detail")
 # Fifteen counties don't fit a tab strip, so a selector drives the per-county
 # deep dive. Counties are ordered geographically (west → east) via COUNTIES;
 # default to Marquette, the UP's largest economy.
+# "Aggregate was added to selector to show the aggreggate data of all UP counties"
 county_names = list(COUNTIES.values())
+county_names.append("Upper Peninsula")
 default_idx = county_names.index("Marquette") if "Marquette" in county_names else 0
 selected_county = st.selectbox(
     "Select a county", county_names, index=default_idx,
     label_visibility="collapsed",
 )
 
-selected_df = df[df["county_name"] == selected_county]
+if selected_county == "Upper Peninsula":
+    selected_df = get_aggregate_data(df)
+else:
+    selected_df = df[df["county_name"] == selected_county]
 selected_housing_df = housing_df[housing_df["county_name"] == selected_county]
 selected_color = COUNTY_COLORS.get(selected_county, FAU_BLUE)
+
 _county_snapshot_card(
     county_df=selected_df,
     county_housing_df=selected_housing_df,

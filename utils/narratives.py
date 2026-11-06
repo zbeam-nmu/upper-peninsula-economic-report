@@ -3,6 +3,7 @@ Narrative text generation and source citations.
 Template-based descriptive paragraphs — no LLM calls.
 """
 from utils.formatting import fmt_number, fmt_pct
+import pandas as pd
 
 
 def source_citation(name: str, url: str, frequency: str) -> str:
@@ -29,7 +30,8 @@ def narrate_employment_trends(
     end_empl: float,
 ) -> str:
     """Describe employment level change over a multi-year period."""
-    if start_empl is None or end_empl is None or start_empl == 0:
+    
+    if pd.isna(start_empl) or pd.isna(end_empl) or (not pd.isna(start_empl) and start_empl == 0):
         return (
             f"Between {start_year} and {end_year}, employment data for "
             f"{county_name} is incomplete."
