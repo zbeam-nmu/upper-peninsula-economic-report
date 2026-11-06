@@ -30,7 +30,7 @@ def _next_quarter_dates(last_date: pd.Timestamp, periods: int) -> pd.DatetimeInd
     1st of that quarter's mapped month.
     """
     year = int(last_date.year)
-    qtr = ((int(last_date.month) - 1) // 3) + 1
+    qtr = {2: 1, 5: 2, 8: 3, 11: 4}[int(last_date.month)]
     out = []
     for _ in range(periods):
         qtr += 1

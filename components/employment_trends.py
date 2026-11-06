@@ -22,12 +22,10 @@ METHODOLOGY_NOTE = (
 
 
 def _trend_input(totals: pd.DataFrame, col: str) -> pd.Series:
-    """Series for STL: remove suppressed or missing values, indexed by date."""
-    clean = totals[~totals.get("is_suppressed",pd.Series(False, index=totals.index)).fillna(False).astype(bool)].copy()
-    clean = clean.dropna(subset=["date", col])
-    clean = clean.sort_values("date")
-
-    return clean.set_index("date")[col].astype(float)
+    """Series for STL: drop suppressed/incomplete tail rows, index by date."""
+    clean = totals[~totals.get("is_suppressed", False).fillna(False)]
+    clean = clean[clean["qtrly_estabs"].notna()]
+    return clean.set_index("date")[col].sort_index()
 
 
 def _build_chart(
@@ -42,8 +40,8 @@ def _build_chart(
     indexed = totals.set_index("date").sort_index()
     labels = indexed["year_qtr"]
     trend = deseasonalize_trend(_trend_input(totals, y_col), log_transform=log_transform)
-    trend = trend[~trend.index.duplicated(keep="last")].reindex(indexed.index)
-    
+    trend = trend.reindex(indexed.index)
+
     # Linear projection from the last 4 trend points, extended to the current
     # calendar quarter (shrinks as new QCEW data is published).
     trend_observed = trend.dropna()
