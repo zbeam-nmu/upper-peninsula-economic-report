@@ -34,6 +34,11 @@ from components.growth_quadrant import (
     build_figure as build_growth_quadrant_fig,
     METHODOLOGY_NOTE as _GROWTH_QUADRANT_TEXT,
 )
+
+from functools import lru_cache
+
+from components.housing_median_value_tseries import METHODOLOGY_NOTE as _HOUSING_TEXT
+HOUSING_NOTE = f'<p class="source"><em>{_HOUSING_TEXT}</em></p>'
 # Wraps the growth quadrant's methodology text in a small source-note paragraph.
 GROWTH_QUADRANT_NOTE = f'<p class="source"><em>{_GROWTH_QUADRANT_TEXT}</em></p>'
 from data.constants import (
@@ -43,7 +48,10 @@ from data.constants import (
     NMU_LINK, NMU_MUTED, NMU_BORDER,
 )
 from utils.formatting import fmt_number, fmt_currency, fmt_pct
-from utils.narratives import narrate_employment_trends, format_industry_list
+from utils.narratives import (
+    narrate_employment_trends, format_industry_list,
+    narrate_median_house_value_trends,
+)
 
 # Sets the output folder (docs/, which GitHub Pages serves) and a minimum
 # employment threshold.
@@ -52,7 +60,7 @@ MIN_EMPLOYMENT = 100
 
 # Sets how many counties get their own detail tab and embed pages, chosen as
 # the largest county economies by latest employment. At 15 this covers every
-# UP county: 15 KPI embeds plus 60 chart embeds (15 counties x 4 sections).
+# UP county: 15 KPI embeds plus 75 chart embeds (15 counties x 5 sections).
 DETAIL_COUNTY_N = 15
 
 
@@ -1126,14 +1134,432 @@ def build_employment_treemap(county_df, county_name, county_id, heading_level=2)
     )
     return html, figures
 
+# Source line shown under the housing section.
+HOUSING_SOURCE = (
+    '<p class="source">Source: <a href="https://www.census.gov/programs-surveys/acs">'
+    'U.S. Census Bureau ACS</a> — Annual</p>'
+)
 
-# Lists the four per-county sections in display order. Both the detail tabs in
+
+# Loads the Census housing data once per build so every county page reuses it.
+@lru_cache(maxsize=1)
+def _housing_df():
+    """Call get_up_housing() on first use and cache the result with lru_cache.
+
+    If the load fails it prints a warning and returns an empty DataFrame, so
+    the build still finishes and each county's housing section shows its
+    "no data" message instead of crashing the whole publish.
+    """
+    from data.fetch_Census_housing import get_up_housing
+    try:
+        return get_up_housing()
+    except Exception as e:
+        print(f"WARNING: housing data could not be loaded: {e}", file=sys.stderr)
+        return pd.DataFrame()
+
+
+# Builds the Housing Median Value section for one county: a narrative, the
+# time-series chart, and a data table. Returns (html, figures).
+def build_housing_trends(county_df, county_name, county_id, heading_level=2):
+    """Housing Median Value Trends: Census ACS median home value by year.
+
+    Takes the same arguments as the QCEW builders so it fits SECTION_BUILDERS,
+    but ignores county_df and filters the cached housing DataFrame to
+    county_name instead. The narrative comes from
+    narrate_median_house_value_trends, the same function the Streamlit app
+    uses, called with the first and last years that have a median value. The
+    figure comes from components.housing_median_value_tseries.build_figure.
+    If the county has no housing rows, it returns a short message section and
+    an empty figures dict.
+    """
+    from components.housing_median_value_tseries import build_figure as build_housing_median_value_fig
+
+    h, _h = f"h{heading_level}", f"/h{heading_level}"
+    title = "Housing Median Value Trends"
+    empty = f'<div class="section"><{h}>{title}<{_h}><p>No housing data available.</p></div>', {}
+
+    housing = _housing_df()
+    if housing.empty or "county_name" not in housing.columns:
+        return empty
+
+    rows = housing[housing["county_name"] == county_name].sort_values("year")
+    rows = rows[rows["median_home_value"].notna()]
+    if rows.empty:
+        return empty
+
+    first, last = rows.iloc[0], rows.iloc[-1]
+    y0, y1 = int(first["year"]), int(last["year"])
+    narrative = narrate_median_house_value_trends(
+        county_name=county_name,
+        start_year=y0, end_year=y1,
+        start_value=first["median_home_value"],
+        end_value=last["median_home_value"],
+    )
+
+    fig = build_housing_median_value_fig(rows)
+    div_id = f"{county_id}-housing-median-value"
+    figures = {div_id: _fig_json(fig)}
+
+    aria = f"Line chart of median home value in {county_name} County, {y0} to {y1}."
+    table = _data_table_html(
+        f"{county_name} County — median home value by year",
+        ["Year", "Median Home Value"],
+        [(int(r["year"]), fmt_currency(r["median_home_value"])) for _, r in rows.iterrows()],
+    )
+
+    html = (
+        f'<div class="section"><{h}>{title}<{_h}>'
+        f'<figure class="chart-figure"><figcaption>{narrative}</figcaption>'
+        f"{_chart_div(div_id, aria)}</figure>{table}{HOUSING_SOURCE}{HOUSING_NOTE}</div>"
+    )
+    return html, figures
+
+
+# Lists the five per-county sections in display order. Both the detail tabs in
 # index.html and the standalone embeds loop over this list.
 # (slug, builder) pairs — the slug is used as the embed filename under
 # docs/embeds/<county>/<slug>.html.
 SECTION_BUILDERS = [
     ("trends", build_trends),
+    ("housing-median-value", build_housing_trends),
     ("workforce-composition", build_employment_treemap),
     ("industry-landscape", build_growth_quadrant),
     ("firm-formation", build_firm_formation),
 ]
+
+
+def build_html(df):
+    """Assemble the complete static HTML dashboard."""
+    from data.fetch_fred import fetch_real_gdp, fetch_unemployment_rate
+    from data.fetch_irs_migration import fetch_irs_migration
+    from data.clean import (
+        latest_gdp_with_growth, latest_unrate_with_yoy, latest_irs_net,
+    )
+
+    figures = {}
+
+    # Data quarter badge
+    sample_totals = get_total_covered(df)
+    sample_latest = get_latest_quarter(sample_totals)
+    if not sample_latest.empty:
+        r = sample_latest.iloc[0]
+        badge = f"Data as of {int(r['year'])} Q{int(r['qtr'])}"
+    else:
+        badge = "Data unavailable"
+
+    # Load secondary KPI datasets once (cache-hot after first run; each loader
+    # returns empty on missing key/network failure → cells degrade to "—").
+    df_gdp_secondary = fetch_real_gdp()
+    df_unrate_secondary = fetch_unemployment_rate()
+    df_irs_secondary = fetch_irs_migration()
+
+    # ── Front-page visuals: interactive county map + largest-county comparison
+    from components.county_map import build_figure as _map_fig, _load_geojson
+    from components.top_counties import build_figure as _top_fig, get_top_counties
+    from data.clean import latest_county_summaries
+
+    summary = latest_county_summaries(df)
+    geojson = _load_geojson()
+    if not summary.empty and geojson is not None:
+        figures["up-county-map"] = _fig_json(_map_fig(summary, geojson))
+        map_aria = (
+            "Choropleth map of the 15 Upper Peninsula counties shaded by "
+            "year-over-year employment growth."
+        )
+        map_html = (
+            '<div class="section"><h2>Upper Peninsula at a Glance</h2>'
+            '<figure class="chart-figure"><figcaption>Counties are shaded by '
+            'year-over-year employment growth (latest published QCEW quarter). '
+            'Hover any county for its employment, establishment count, and average '
+            'salary.</figcaption>'
+            f'{_chart_div("up-county-map", map_aria)}</figure>'
+            f'{_map_table_html(summary)}{SOURCE}</div>'
+        )
+    else:
+        map_html = (
+            '<div class="section"><h2>Upper Peninsula at a Glance</h2>'
+            '<p>County map unavailable.</p></div>'
+        )
+
+    top = get_top_counties(df)
+    if not top.empty:
+        figures["up-top-counties"] = _fig_json(_top_fig(top))
+        top_aria = (
+            "Grouped bar chart comparing year-over-year employment, establishment, "
+            "and wage growth for the five largest Upper Peninsula county economies."
+        )
+        top_html = (
+            '<div class="section"><h2>Largest County Economies</h2>'
+            '<figure class="chart-figure"><figcaption>The five UP counties with the '
+            'most covered employment, compared on year-over-year growth in jobs, '
+            'businesses, and wages.</figcaption>'
+            f'{_chart_div("up-top-counties", top_aria)}</figure>'
+            f'{_top_table_html(top)}{SOURCE}</div>'
+        )
+    else:
+        top_html = (
+            '<div class="section"><h2>Largest County Economies</h2>'
+            '<p>No disclosable county totals available.</p></div>'
+        )
+
+    # ── Per-county detail tabs (KPI card + five chart sections each), limited
+    # to the largest county economies.
+    tab_buttons = ""
+    tab_content = ""
+    for idx, county_name in enumerate(_detail_counties(df)):
+        county_df = df[df["county_name"] == county_name]
+        county_id = county_name.lower().replace(" ", "-")
+        active = " active" if idx == 0 else ""
+        color = COUNTY_COLORS.get(county_name, FAU_BLUE)
+        secondary = {
+            "gdp": latest_gdp_with_growth(df_gdp_secondary, county_name),
+            "unrate": latest_unrate_with_yoy(df_unrate_secondary, county_name),
+            "irs": latest_irs_net(df_irs_secondary, county_name),
+        }
+
+        tab_buttons += (
+            f'<button class="tab-btn{active}" data-tab="{county_id}" '
+            f'aria-pressed="{"true" if idx == 0 else "false"}" '
+            f'aria-controls="{county_id}" '
+            f"onclick=\"showTab('{county_id}')\">{county_name} County</button>\n"
+        )
+
+        sections = [
+            f'<div class="snapshot-row single-county">'
+            f'{build_kpi_card(county_df, county_name, color, secondary)}</div>',
+            KPI_CAPTION_HTML,
+        ]
+        for _slug, builder in SECTION_BUILDERS:
+            sections.append('<div class="divider"></div>')
+            # Index detail sections sit under the h3 county name, itself under the
+            # h2 "County Detail" — so they must be h4 to keep the hierarchy nested
+            # (WCAG 1.3.1). Standalone embeds keep the default h2 (under their h1).
+            section_html, section_figs = builder(
+                county_df, county_name, county_id, heading_level=4
+            )
+            sections.append(section_html)
+            figures.update(section_figs)
+
+        tab_content += f'<div id="{county_id}" class="tab-content{active}">\n'
+        tab_content += "\n".join(sections)
+        tab_content += "\n</div>\n"
+
+    figures_json = json.dumps(figures)
+    built = datetime.now(timezone.utc).strftime("%B %d, %Y")
+
+    # Assemble HTML — CSS and JS are regular strings (no f-string escaping needed)
+    return "\n".join([
+        "<!DOCTYPE html>",
+        '<html lang="en">',
+        "<head>",
+        '<meta charset="UTF-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+        "<title>Upper Peninsula Regional Economic Report</title>",
+        '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>',
+        "<style>",
+        CSS,
+        "</style>",
+        "</head>",
+        "<body>",
+        "<header>",
+        '<h1 class="main-title">Upper Peninsula Regional Economic Report</h1>',
+        '<p class="main-subtitle">Quarterly Census of Employment and Wages (QCEW) &mdash; '
+        'the 15 counties of Michigan&rsquo;s Upper Peninsula</p>',
+        f'<div class="data-badge">{badge}</div>',
+        "</header>",
+        map_html,
+        '<div class="divider"></div>',
+        top_html,
+        '<div class="divider"></div>',
+        f'<h2 style="color: {FAU_BLUE};">County Detail</h2>',
+        f'<div class="tab-bar" role="group" aria-label="Select a county">{tab_buttons}</div>',
+        tab_content,
+        '<footer class="footer">',
+        f'Source: <a href="https://www.bls.gov/cew/">BLS QCEW</a> &mdash; Quarterly '
+        f'| Last updated: {built}',
+        "</footer>",
+        "<script>",
+        f"var figureData = {figures_json};",
+        JS,
+        "</script>",
+        "</body>",
+        "</html>",
+    ])
+
+
+# ── Embed pipeline ───────────────────────────────────────────────────────────
+
+KPI_CAPTION_HTML = (
+    '<p class="kpi-caption">'
+    'Net Migration reflects IRS SOI county-to-county filings (Total Migration-US '
+    'and Foreign) — the net change in tax-filer exemptions between consecutive '
+    'filing years, inclusive of moves into and out of the country. FRED real GDP '
+    'and unemployment rate vintages reflect the most recent BEA/BLS releases as '
+    'of the data badge above.'
+    '</p>'
+)
+
+
+def write_embeds(df):
+    """Emit standalone embed pages: the region overview visuals plus per-county
+    KPI cards and chart sections for the largest county economies.
+
+    File layout:
+        docs/embeds/up-map.html              (interactive county choropleth)
+        docs/embeds/up-top-counties.html     (largest-county growth comparison)
+        docs/embeds/kpi-<county-slug>.html   (one per detail county)
+        docs/embeds/<county-slug>/<section-slug>.html  (5 per detail county)
+
+    Each output is a self-contained HTML page wrapping the same fragments
+    used by the main dashboard — so visuals stay identical and the weekly
+    GitHub Action regenerates them on the same cadence as docs/index.html.
+    """
+    from data.fetch_fred import fetch_real_gdp, fetch_unemployment_rate
+    from data.fetch_irs_migration import fetch_irs_migration
+    from data.clean import (
+        latest_gdp_with_growth, latest_unrate_with_yoy, latest_irs_net,
+        latest_county_summaries,
+    )
+    from components.county_map import build_figure as _map_fig, _load_geojson
+    from components.top_counties import build_figure as _top_fig, get_top_counties
+
+    embeds_dir = DOCS_DIR / "embeds"
+    embeds_dir.mkdir(parents=True, exist_ok=True)
+
+    df_gdp = fetch_real_gdp()
+    df_unrate = fetch_unemployment_rate()
+    df_irs = fetch_irs_migration()
+
+    # ── Region overview embeds: interactive map + largest-county comparison. ─
+    summary = latest_county_summaries(df)
+    geojson = _load_geojson()
+    if not summary.empty and geojson is not None:
+        map_aria = (
+            "Choropleth map of the 15 Upper Peninsula counties shaded by "
+            "year-over-year employment growth."
+        )
+        map_body = (
+            '<div class="section"><h2>Upper Peninsula at a Glance</h2>'
+            '<figure class="chart-figure"><figcaption>Counties shaded by '
+            'year-over-year employment growth (latest published QCEW quarter).'
+            '</figcaption>'
+            f'{_chart_div("up-county-map", map_aria)}</figure>'
+            f'{_map_table_html(summary)}</div>'
+        )
+        (embeds_dir / "up-map.html").write_text(
+            wrap_as_embed(
+                map_body, {"up-county-map": _fig_json(_map_fig(summary, geojson))},
+                "Upper Peninsula — County Map",
+            ),
+            encoding="utf-8",
+        )
+
+    top = get_top_counties(df)
+    if not top.empty:
+        top_aria = (
+            "Grouped bar chart comparing year-over-year employment, establishment, "
+            "and wage growth for the five largest Upper Peninsula county economies."
+        )
+        top_body = (
+            '<div class="section"><h2>Largest County Economies</h2>'
+            '<figure class="chart-figure"><figcaption>The five UP counties with the '
+            'most covered employment, compared on year-over-year growth in jobs, '
+            'businesses, and wages.</figcaption>'
+            f'{_chart_div("up-top-counties", top_aria)}</figure>'
+            f'{_top_table_html(top)}</div>'
+        )
+        (embeds_dir / "up-top-counties.html").write_text(
+            wrap_as_embed(
+                top_body, {"up-top-counties": _fig_json(_top_fig(top))},
+                "Upper Peninsula — Largest County Economies",
+            ),
+            encoding="utf-8",
+        )
+
+    # ── Per-county KPI + chart embeds for the largest county economies. ──────
+    order = _detail_counties(df)
+    for county_name in order:
+        county_df = df[df["county_name"] == county_name]
+        county_id = county_name.lower().replace(" ", "-")
+        color = COUNTY_COLORS.get(county_name, FAU_BLUE)
+        secondary = {
+            "gdp": latest_gdp_with_growth(df_gdp, county_name),
+            "unrate": latest_unrate_with_yoy(df_unrate, county_name),
+            "irs": latest_irs_net(df_irs, county_name),
+        }
+        card_html = build_kpi_card(county_df, county_name, color, secondary)
+        body = (
+            f'<h2 style="color: {FAU_BLUE}; margin-bottom: 0.5rem;">'
+            f'{county_name} County Snapshot</h2>'
+            f'<div class="snapshot-row single-county">{card_html}</div>'
+            f'{KPI_CAPTION_HTML}'
+        )
+        (embeds_dir / f"kpi-{county_id}.html").write_text(
+            wrap_as_embed(body, {}, f"{county_name} County — KPI Snapshot"),
+            encoding="utf-8",
+        )
+
+        county_dir = embeds_dir / county_id
+        county_dir.mkdir(parents=True, exist_ok=True)
+        for slug, builder in SECTION_BUILDERS:
+            section_html, section_figs = builder(county_df, county_name, county_id)
+            title = f"{county_name} County — {slug.replace('-', ' ').title()}"
+            (county_dir / f"{slug}.html").write_text(
+                wrap_as_embed(section_html, section_figs, title),
+                encoding="utf-8",
+            )
+
+    print(
+        f"  Wrote 2 overview embeds + {len(order)} KPI embeds + "
+        f"{len(order) * len(SECTION_BUILDERS)} chart embeds to {embeds_dir}"
+    )
+
+
+# ── Entry point ──────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("Loading QCEW data...")
+    raw = fetch_all_data()
+    if raw.empty:
+        print("ERROR: No data available. Check your internet connection.")
+        sys.exit(1)
+
+    df = clean(raw)
+    print(f"  {len(df):,} rows for {df['county_name'].nunique()} counties")
+
+    # The QCEW build no longer gates on FRED. fetch_real_gdp/_unemployment_rate
+    # fetch fresh and fall back to the committed last-good cache on failure (see
+    # data/fetch_fred._fetch_with_cache_fallback), so a FRED rate-limit or outage
+    # leaves last week's KPI row in place rather than blanking it or aborting the
+    # whole publish. We log a heads-up if a key is set but both fetches come back
+    # empty (fresh fetch failed AND no fallback cache) — the secondary row then
+    # degrades to "—" — but we still publish the fresh QCEW data.
+    from data.fetch_fred import (
+        fred_key_configured, fetch_real_gdp, fetch_unemployment_rate,
+    )
+    if fred_key_configured():
+        empty = [
+            name
+            for name, frame in (
+                ("Real GDP", fetch_real_gdp()),
+                ("unemployment", fetch_unemployment_rate()),
+            )
+            if frame.empty
+        ]
+        if empty:
+            print(
+                f"WARNING: FRED_API_KEY is set but the {' and '.join(empty)} "
+                "fetch returned no data and no fallback cache exists; the "
+                "secondary KPI row will show '—'. Publishing fresh QCEW data."
+            )
+
+    print("Building HTML dashboard...")
+    html = build_html(df)
+
+    DOCS_DIR.mkdir(exist_ok=True)
+    output = DOCS_DIR / "index.html"
+    output.write_text(html, encoding="utf-8")
+    print(f"Done! {output} ({output.stat().st_size / 1024:.0f} KB)")
+
+    print("Building embed pages...")
+    write_embeds(df)
