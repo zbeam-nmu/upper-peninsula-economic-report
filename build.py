@@ -58,14 +58,15 @@ from utils.narratives import (
 DOCS_DIR = Path(__file__).parent / "docs"
 MIN_EMPLOYMENT = 100
 
-# Sets how many counties get their own detail tab and embed pages, chosen as
-# the largest county economies by latest employment. At 15 this covers every
-# UP county: 15 KPI embeds plus 75 chart embeds (15 counties x 5 sections).
-DETAIL_COUNTY_N = 15
+# Per-county deep dives are generated for every UP county economy (ranked by
+# latest employment). All 15 counties × 4 sections = 60 chart embeds plus 15
+# KPI embeds; the index renders one county tab at a time, so the per-tab weight
+# stays flat. Every county has non-suppressed total-covered data, so each gets a
+# valid KPI card and trends; the smallest (e.g. Keweenaw) have sparse industry
+# detail, and those charts degrade gracefully to their disclosable sectors.
+DETAIL_COUNTY_N = len(COUNTIES)
 
 
-# Returns the names of the largest county economies, which get detail tabs and
-# embeds.
 def _detail_counties(df) -> list[str]:
     """Ask components.top_counties.get_top_counties for the top DETAIL_COUNTY_N counties.
 
@@ -222,17 +223,23 @@ h1, h2, h3, h4 { color: """ + FAU_BLUE + """; }
 }
 
 /* Tabs */
-.tab-bar { display: flex; border-bottom: 2px solid """ + FAU_GRAY + """; margin: 1.5rem 0 0 0; }
+.tab-bar {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.3rem 0.4rem;
+    border-bottom: 2px solid """ + FAU_GRAY + """;
+    margin: 1.5rem 0 0 0;
+}
 .tab-btn {
-    padding: 0.75rem 1.5rem;
+    padding: 0.6rem 0.5rem;
     font-weight: 500;
     color: """ + FAU_DARK_GRAY + """;
     background: none;
     border: none;
     cursor: pointer;
     font-size: 1rem;
+    text-align: center;
     border-bottom: 3px solid transparent;
-    margin-bottom: -2px;
     font-family: inherit;
 }
 .tab-btn:hover { color: """ + FAU_BLUE + """; }
@@ -272,7 +279,9 @@ h1, h2, h3, h4 { color: """ + FAU_BLUE + """; }
 @media (max-width: 768px) {
     .snapshot-row, .chart-row { flex-direction: column; }
     body { padding: 0.5rem 1rem; }
-    .tab-btn { padding: 0.5rem 1rem; font-size: 0.9rem; }
+    /* 3 columns (not 2) keeps the 15 counties in even rows — no orphan. */
+    .tab-bar { grid-template-columns: repeat(3, 1fr); gap: 0.2rem; }
+    .tab-btn { padding: 0.5rem 0.3rem; font-size: 0.85rem; }
 }
 """ + A11Y_CSS
 
@@ -298,6 +307,14 @@ function selectTreemapYear(btn) {
 # Script for the main dashboard: county tab switching (with a chart resize so
 # hidden charts redraw correctly) and drawing every chart in figureData.
 JS = TREEMAP_JS + """
+function renderChart(divId) {
+    var el = document.getElementById(divId);
+    if (!el || el.dataset.rendered || !figureData[divId]) return;
+    el.dataset.rendered = '1';
+    var fig = figureData[divId];
+    Plotly.newPlot(divId, fig.data, fig.layout, {responsive: true, displayModeBar: false});
+}
+
 function showTab(tabId) {
     document.querySelectorAll('.tab-content').forEach(function(el) { el.classList.remove('active'); });
     document.querySelectorAll('.tab-btn').forEach(function(el) {
@@ -308,6 +325,12 @@ function showTab(tabId) {
     var btn = document.querySelector('[data-tab="' + tabId + '"]');
     btn.classList.add('active');
     btn.setAttribute('aria-pressed', 'true');
+    // Render this county's charts the first time its tab is revealed (deferred
+    // from load so all 15 counties don't plot at once), then resize now that
+    // the tab is visible.
+    document.querySelectorAll('#' + tabId + ' .plotly-chart').forEach(function(el) {
+        renderChart(el.id);
+    });
     setTimeout(function() {
         document.querySelectorAll('#' + tabId + ' .plotly-chart').forEach(function(el) {
             if (el.data) Plotly.Plots.resize(el);
@@ -315,9 +338,16 @@ function showTab(tabId) {
     }, 50);
 }
 
+// Plot only the charts visible at load — the overview charts plus the active
+// county tab. Charts inside inactive county tabs render lazily via showTab the
+// first time that county is opened; plotting all 15 counties up front froze the
+// page and blocked tab switching.
 Object.keys(figureData).forEach(function(divId) {
-    var fig = figureData[divId];
-    Plotly.newPlot(divId, fig.data, fig.layout, {responsive: true, displayModeBar: false});
+    var el = document.getElementById(divId);
+    if (!el) return;
+    var tab = el.closest('.tab-content');
+    if (tab && !tab.classList.contains('active')) return;
+    renderChart(divId);
 });
 """
 
@@ -549,12 +579,22 @@ def _data_table_html(caption, columns, rows):
     )
 
 
-# Builds the data table that accompanies the county map, one row per county.
-def _map_table_html(summary):
-    """Sort the county summary by employment (largest first) and format each row.
+def _load_benchmarks(summary):
+    """U.S./Michigan totals for the map insets; None (insets omitted) on failure."""
+    from components.county_map import load_benchmarks
+    try:
+        return load_benchmarks(summary)
+    except Exception as exc:  # benchmark fetch must never break the build
+        print(f"WARNING: map benchmarks unavailable ({exc}); building map without insets")
+        return None
 
-    Columns are employment, establishments, average salary, and YoY employment
-    growth, formatted with fmt_number, fmt_currency, and _pct_str.
+
+def _map_table_html(summary, benchmarks=None):
+    """Data table for the county choropleth (one row per county).
+
+    If `benchmarks` (components.county_map.load_benchmarks) is given, Michigan
+    and United States rows follow the counties, so the inset maps' hover-only
+    values are also in the table (WCAG 1.1.1).
     """
     ordered = summary.sort_values("employment", ascending=False, na_position="last")
     rows = [
@@ -567,9 +607,22 @@ def _map_table_html(summary):
         )
         for _, r in ordered.iterrows()
     ]
+    from components.county_map import BENCHMARK_LABELS
+    for name in ("Michigan", "United States"):
+        b = (benchmarks or {}).get(name)
+        if b is None:
+            continue
+        rows.append((
+            BENCHMARK_LABELS[name],
+            fmt_number(b["employment"]),
+            fmt_number(b["qtrly_estabs"]),
+            fmt_currency(b["avg_annual_wage"]),
+            _pct_str(b["oty_emp_pct"]) if b["oty_emp_pct"] is not None else "—",
+        ))
     return _data_table_html(
-        "Upper Peninsula counties — latest-quarter employment, establishments, "
-        "average salary, and year-over-year employment growth",
+        "Upper Peninsula counties, with Michigan and U.S. totals for comparison — "
+        "latest-quarter employment, establishments, average salary, and "
+        "year-over-year employment growth",
         ["County", "Employment", "Establishments", "Average Salary",
          "YoY Employment Growth"],
         rows,
@@ -1261,19 +1314,23 @@ def build_html(df):
     summary = latest_county_summaries(df)
     geojson = _load_geojson()
     if not summary.empty and geojson is not None:
-        figures["up-county-map"] = _fig_json(_map_fig(summary, geojson))
+        benchmarks = _load_benchmarks(summary)
+        figures["up-county-map"] = _fig_json(_map_fig(summary, geojson, benchmarks))
         map_aria = (
             "Choropleth map of the 15 Upper Peninsula counties shaded by "
-            "year-over-year employment growth."
+            "year-over-year employment growth, with small inset maps of Michigan "
+            "and the United States giving statewide and national totals."
         )
         map_html = (
             '<div class="section"><h2>Upper Peninsula at a Glance</h2>'
             '<figure class="chart-figure"><figcaption>Counties are shaded by '
             'year-over-year employment growth (latest published QCEW quarter). '
             'Hover any county for its employment, establishment count, and average '
-            'salary.</figcaption>'
+            'salary. Hover the small U.S. and Michigan maps for national and '
+            'statewide totals; both also appear at the bottom of the data table.'
+            '</figcaption>'
             f'{_chart_div("up-county-map", map_aria)}</figure>'
-            f'{_map_table_html(summary)}{SOURCE}</div>'
+            f'{_map_table_html(summary, benchmarks)}{SOURCE}</div>'
         )
     else:
         map_html = (
@@ -1302,7 +1359,7 @@ def build_html(df):
             '<p>No disclosable county totals available.</p></div>'
         )
 
-    # ── Per-county detail tabs (KPI card + five chart sections each), limited
+    # ── Per-county detail tabs (KPI card + four chart sections each), limited
     # to the largest county economies.
     tab_buttons = ""
     tab_content = ""
@@ -1408,7 +1465,7 @@ def write_embeds(df):
         docs/embeds/up-map.html              (interactive county choropleth)
         docs/embeds/up-top-counties.html     (largest-county growth comparison)
         docs/embeds/kpi-<county-slug>.html   (one per detail county)
-        docs/embeds/<county-slug>/<section-slug>.html  (5 per detail county)
+        docs/embeds/<county-slug>/<section-slug>.html  (4 per detail county)
 
     Each output is a self-contained HTML page wrapping the same fragments
     used by the main dashboard — so visuals stay identical and the weekly
@@ -1434,21 +1491,25 @@ def write_embeds(df):
     summary = latest_county_summaries(df)
     geojson = _load_geojson()
     if not summary.empty and geojson is not None:
+        benchmarks = _load_benchmarks(summary)
         map_aria = (
             "Choropleth map of the 15 Upper Peninsula counties shaded by "
-            "year-over-year employment growth."
+            "year-over-year employment growth, with small inset maps of Michigan "
+            "and the United States giving statewide and national totals."
         )
         map_body = (
             '<div class="section"><h2>Upper Peninsula at a Glance</h2>'
             '<figure class="chart-figure"><figcaption>Counties shaded by '
-            'year-over-year employment growth (latest published QCEW quarter).'
+            'year-over-year employment growth (latest published QCEW quarter). '
+            'Hover the small U.S. and Michigan maps for national and statewide '
+            'totals; both also appear at the bottom of the data table.'
             '</figcaption>'
             f'{_chart_div("up-county-map", map_aria)}</figure>'
-            f'{_map_table_html(summary)}</div>'
+            f'{_map_table_html(summary, benchmarks)}</div>'
         )
         (embeds_dir / "up-map.html").write_text(
             wrap_as_embed(
-                map_body, {"up-county-map": _fig_json(_map_fig(summary, geojson))},
+                map_body, {"up-county-map": _fig_json(_map_fig(summary, geojson, benchmarks))},
                 "Upper Peninsula — County Map",
             ),
             encoding="utf-8",
