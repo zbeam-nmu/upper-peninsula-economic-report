@@ -45,7 +45,7 @@ END_ACS_YEAR = date.today().year - 2
 ACS_YEARS = list(range(START_ACS_YEAR, END_ACS_YEAR + 1))
 
 # --- MIT_AI_safety_sector_rating.csv ---------------------------------------------
-SECTOR_RATING_CSV_PATH = Path(CACHE_DIR) / "MIT_AI_safety_sector_rating.csv"
+SECTOR_RATING_CSV_PATH = Path(__file__).parent / "mit_ai_safety_sector_rating.csv"
 
 # Mapping were made by checking MIT AI Risk taxonomy.
 # https://airisk.mit.edu/navigator#/taxonomies

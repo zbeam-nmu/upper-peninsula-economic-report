@@ -29,7 +29,10 @@ from data.fetch import fetch_all_data
 from data.clean import (
     clean, get_total_covered, get_latest_quarter, get_growth_quadrant_data,
 )
-from data.analysis import deseasonalize_trend, project_trend, periods_to_current_quarter
+from data.analysis import (
+    deseasonalize_trend, project_trend, periods_to_current_quarter,
+    merge_mit_ai_safety_sector_rating_with_qcew,
+)
 from components.growth_quadrant import (
     build_figure as build_growth_quadrant_fig,
     METHODOLOGY_NOTE as _GROWTH_QUADRANT_TEXT,
@@ -46,12 +49,26 @@ from data.constants import (
     FAU_ELECTRIC_BLUE, FAU_SKY_BLUE, COUNTY_COLORS, COUNTIES,
     NMU_FONT_FAMILY, GOOGLE_FONTS_IMPORT, PLOTLY_FONT,
     NMU_LINK, NMU_MUTED, NMU_BORDER,
+    SECTOR_RATING_CSV_PATH,
 )
 from utils.formatting import fmt_number, fmt_currency, fmt_pct
 from utils.narratives import (
     narrate_employment_trends, format_industry_list,
     narrate_median_house_value_trends,
 )
+
+
+def _load_ai_risk_data(qcew_df):
+    from data.clean import (
+        clean_mit_ai_safety_sector_rating,
+        clean_qcew_data_for_AI_risk_embed,
+    )
+
+    ratings = clean_mit_ai_safety_sector_rating(
+        pd.read_csv(SECTOR_RATING_CSV_PATH)
+    )
+    workers = clean_qcew_data_for_AI_risk_embed(qcew_df)
+    return merge_mit_ai_safety_sector_rating_with_qcew(ratings, workers)
 
 # Sets the output folder (docs/, which GitHub Pages serves) and a minimum
 # employment threshold.
@@ -1268,6 +1285,66 @@ def build_housing_trends(county_df, county_name, county_id, heading_level=2):
     return html, figures
 
 
+def build_ai_risk_score(mit_ai_risk_merged_df, county_name, county_id, heading_level=2):
+    from components.county_AI_risk_score import (
+        build_figure as ai_risk_figure,
+        get_county_risk_data,
+    )
+
+    h, _h = f"h{heading_level}", f"/h{heading_level}"
+    county_data = get_county_risk_data(mit_ai_risk_merged_df, county_name)
+    title = "AI Vulnerability by Sector"
+    if county_data.empty:
+        return (
+            f'<div class="section"><{h}>{title}<{_h}>'
+            f'<p>No AI vulnerability rating data is available for '
+            f'{county_name} County.</p></div>',
+            {},
+        )
+
+    total_workers = county_data["number_of_workers"].sum()
+    weighted_average = county_data["weighted_score"].sum() / total_workers
+    narrative = (
+        f"Across {len(county_data)} rated sectors, the employment-weighted "
+        f"average AI vulnerability score is {weighted_average:.2f} out of 5, "
+        f"representing {fmt_number(total_workers)} workers."
+    )
+
+    div_id = f"{county_id}-ai-risk-score"
+    fig = ai_risk_figure(county_data, county_name, weighted_average)
+    figures = {div_id: _fig_json(fig)}
+    aria = (
+        f"Histogram of workers by AI vulnerability score for {county_name} "
+        f"County across {len(county_data)} rated sectors. A dashed vertical "
+        f"line marks the employment-weighted average score of "
+        f"{weighted_average:.2f} out of 5."
+    )
+    table = _data_table_html(
+        f"{county_name} County — sector AI vulnerability scores and workers",
+        ["Sector", "Vulnerability Score", "Workers", "Weighted Score Contribution"],
+        [
+            (
+                row["target_code"],
+                f'{row["risk_score"]:.2f}',
+                fmt_number(row["number_of_workers"]),
+                fmt_number(row["weighted_score"]),
+            )
+            for _, row in county_data.sort_values("target_code").iterrows()
+        ],
+    )
+    source = (
+        '<p class="source">Sector vulnerability ratings: '
+        '<a href="https://airisk.mit.edu/navigator#/taxonomies">MIT AI Risk '
+        'Navigator</a>. Employment: latest published BLS QCEW quarter.</p>'
+    )
+    html = (
+        f'<div class="section"><{h}>{title}<{_h}>'
+        f'<figure class="chart-figure"><figcaption>{narrative}</figcaption>'
+        f'{_chart_div(div_id, aria)}</figure>{table}{source}</div>'
+    )
+    return html, figures
+
+
 # Lists the five per-county sections in display order. Both the detail tabs in
 # index.html and the standalone embeds loop over this list.
 # (slug, builder) pairs — the slug is used as the embed filename under
@@ -1281,7 +1358,18 @@ SECTION_BUILDERS = [
 ]
 
 
-def build_html(df):
+def _section_builders(mit_ai_risk_merged_df):
+    def build_county_ai_risk(_county_df, county_name, county_id, heading_level=2):
+        return build_ai_risk_score(
+            mit_ai_risk_merged_df, county_name, county_id, heading_level
+        )
+
+    builders = SECTION_BUILDERS.copy()
+    builders.insert(3, ("ai-risk-score", build_county_ai_risk))
+    return builders
+
+
+def build_html(df, mit_ai_risk_merged_df=None):
     """Assemble the complete static HTML dashboard."""
     from data.fetch_fred import fetch_real_gdp, fetch_unemployment_rate
     from data.fetch_irs_migration import fetch_irs_migration
@@ -1290,6 +1378,9 @@ def build_html(df):
     )
 
     figures = {}
+    if mit_ai_risk_merged_df is None:
+        mit_ai_risk_merged_df = _load_ai_risk_data(df)
+    section_builders = _section_builders(mit_ai_risk_merged_df)
 
     # Data quarter badge
     sample_totals = get_total_covered(df)
@@ -1386,7 +1477,7 @@ def build_html(df):
             f'{build_kpi_card(county_df, county_name, color, secondary)}</div>',
             KPI_CAPTION_HTML,
         ]
-        for _slug, builder in SECTION_BUILDERS:
+        for _slug, builder in section_builders:
             sections.append('<div class="divider"></div>')
             # Index detail sections sit under the h3 county name, itself under the
             # h2 "County Detail" — so they must be h4 to keep the hierarchy nested
@@ -1457,7 +1548,7 @@ KPI_CAPTION_HTML = (
 )
 
 
-def write_embeds(df):
+def write_embeds(df, mit_ai_risk_merged_df=None):
     """Emit standalone embed pages: the region overview visuals plus per-county
     KPI cards and chart sections for the largest county economies.
 
@@ -1482,6 +1573,9 @@ def write_embeds(df):
 
     embeds_dir = DOCS_DIR / "embeds"
     embeds_dir.mkdir(parents=True, exist_ok=True)
+    if mit_ai_risk_merged_df is None:
+        mit_ai_risk_merged_df = _load_ai_risk_data(df)
+    section_builders = _section_builders(mit_ai_risk_merged_df)
 
     df_gdp = fetch_real_gdp()
     df_unrate = fetch_unemployment_rate()
@@ -1562,7 +1656,7 @@ def write_embeds(df):
 
         county_dir = embeds_dir / county_id
         county_dir.mkdir(parents=True, exist_ok=True)
-        for slug, builder in SECTION_BUILDERS:
+        for slug, builder in section_builders:
             section_html, section_figs = builder(county_df, county_name, county_id)
             title = f"{county_name} County — {slug.replace('-', ' ').title()}"
             (county_dir / f"{slug}.html").write_text(
@@ -1572,7 +1666,7 @@ def write_embeds(df):
 
     print(
         f"  Wrote 2 overview embeds + {len(order)} KPI embeds + "
-        f"{len(order) * len(SECTION_BUILDERS)} chart embeds to {embeds_dir}"
+        f"{len(order) * len(section_builders)} chart embeds to {embeds_dir}"
     )
 
 
@@ -1615,7 +1709,8 @@ if __name__ == "__main__":
             )
 
     print("Building HTML dashboard...")
-    html = build_html(df)
+    mit_ai_risk_merged_df = _load_ai_risk_data(raw)
+    html = build_html(df, mit_ai_risk_merged_df)
 
     DOCS_DIR.mkdir(exist_ok=True)
     output = DOCS_DIR / "index.html"
@@ -1623,4 +1718,4 @@ if __name__ == "__main__":
     print(f"Done! {output} ({output.stat().st_size / 1024:.0f} KB)")
 
     print("Building embed pages...")
-    write_embeds(df)
+    write_embeds(df, mit_ai_risk_merged_df)

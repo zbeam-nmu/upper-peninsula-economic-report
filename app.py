@@ -26,7 +26,7 @@ from data.clean import (
 from data.constants import (
     FAU_BLUE, FAU_RED, FAU_DARK_GRAY, FAU_GRAY, FAU_ELECTRIC_BLUE,
     FAU_SKY_BLUE, COUNTY_COLORS, COUNTIES,
-    NMU_FONT_FAMILY, GOOGLE_FONTS_IMPORT,
+    NMU_FONT_FAMILY, GOOGLE_FONTS_IMPORT, SECTOR_RATING_CSV_PATH,
 )
 from utils.formatting import fmt_number, fmt_currency
 from utils.narratives import source_citation
@@ -208,7 +208,7 @@ except Exception as e:
     housing_df = pd.DataFrame()
 
 # MIT AI Safety Sector Rating data
-mit_ai_safety_df = clean_mit_ai_safety_sector_rating(pd.read_csv("/workspaces/upper-peninsula-economic-report/data/cache/MIT_AI_safety_sector_rating"))
+mit_ai_safety_df = clean_mit_ai_safety_sector_rating(pd.read_csv(SECTOR_RATING_CSV_PATH))
 qcew_data_for_ai_risk_df = clean_qcew_data_for_AI_risk_embed(raw_df)
 
 mit_ai_risk_merged_df = merge_mit_ai_safety_sector_rating_with_qcew(mit_ai_safety_df, qcew_data_for_ai_risk_df)

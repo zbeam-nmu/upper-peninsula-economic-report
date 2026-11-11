@@ -1,24 +1,22 @@
 import pandas as pd
 
 
-def render_county_ai_risk_score_hist(
+def get_county_risk_data(
     mit_ai_risk_merged_df: pd.DataFrame,
     selected_county: str,
-) -> None:
-    import streamlit as st
-    import plotly.graph_objects as go
-
+) -> pd.DataFrame:
     county_data = mit_ai_risk_merged_df.loc[
         mit_ai_risk_merged_df["county_name"] == selected_county
     ].dropna(subset=["risk_score", "number_of_workers", "weighted_score"])
-    county_data = county_data.loc[county_data["number_of_workers"] > 0].copy()
+    return county_data.loc[county_data["number_of_workers"] > 0].copy()
 
-    if county_data.empty:
-        st.info(f"No AI vulnerability rating data is available for {selected_county} County.")
-        return
 
-    total_workers = county_data["number_of_workers"].sum()
-    weighted_average = county_data["weighted_score"].sum() / total_workers
+def build_figure(
+    county_data: pd.DataFrame,
+    selected_county: str,
+    weighted_average: float,
+):
+    import plotly.graph_objects as go
 
     fig = go.Figure()
     fig.add_trace(go.Histogram(
@@ -52,6 +50,25 @@ def render_county_ai_risk_score_hist(
         height=500,
         margin=dict(t=50, b=50, l=50, r=50),
     )
+    return fig
+
+
+def render_county_ai_risk_score_hist(
+    mit_ai_risk_merged_df: pd.DataFrame,
+    selected_county: str,
+) -> None:
+    import streamlit as st
+
+    county_data = get_county_risk_data(mit_ai_risk_merged_df, selected_county)
+
+    if county_data.empty:
+        st.info(f"No AI vulnerability rating data is available for {selected_county} County.")
+        return
+
+    total_workers = county_data["number_of_workers"].sum()
+    weighted_average = county_data["weighted_score"].sum() / total_workers
+
+    fig = build_figure(county_data, selected_county, weighted_average)
 
     st.markdown(
         f"Employment-weighted average vulnerability score: **{weighted_average:.2f} / 5** "
