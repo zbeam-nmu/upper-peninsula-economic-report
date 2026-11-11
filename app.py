@@ -294,7 +294,7 @@ def _county_snapshot_card(
     secondary = secondary or {}
     secondary_html = _secondary_row_html(secondary)
 
-    st.markdown(f"""
+    st.html(f"""
     <div class="county-card" style="border-left-color: {color};">
         <h3 style="color: {color};">{county_name} County</h3>
         <div class="kpi-row">
@@ -319,9 +319,9 @@ def _county_snapshot_card(
                 {_delta_html(housing_med_pct)}
             </div>
         </div>
-        {secondary_html}
+{secondary_html}
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
 
 def _secondary_row_html(secondary: dict) -> str:

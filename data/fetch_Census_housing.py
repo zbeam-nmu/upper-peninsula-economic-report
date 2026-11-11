@@ -54,6 +54,8 @@ def get_up_housing(refresh=False, cache_path=ACS_CACHE_PATH):
             continue
         resp.raise_for_status()
 
+
+
         rows = resp.json()
         df = pd.DataFrame(rows[1:], columns=rows[0])
         df["year"] = year
