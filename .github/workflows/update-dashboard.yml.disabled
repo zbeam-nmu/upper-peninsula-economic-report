@@ -1,0 +1,81 @@
+name: Update Dashboard Data
+
+on:
+  schedule:
+    # Every Monday at 6:00 AM UTC (1:00 AM Eastern)
+    - cron: '0 6 * * 1'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-build.txt
+
+      - name: Build static dashboard
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          CENSUS_API_KEY: ${{ secrets.CENSUS_API_KEY }}
+        run: python build.py
+
+      # WCAG 2.1 AA gate. Runs AFTER the build and BEFORE the commit, so a
+      # regression fails the job and the commit step is skipped — the last good
+      # published pages are preserved (same fail-safe as the FRED guard). The
+      # gate is data-independent (structure/contrast/ARIA don't change with the
+      # numbers), so a passing build keeps passing week to week.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Accessibility gate (WCAG 2.1 AA)
+        run: |
+          npm install
+          npm run a11y
+
+      - name: Push housing and AI-risk embeds to upstream site
+        if: ${{ secrets.EMBEDS_PUSH_TOKEN != '' }}
+        env:
+          TARGET_REPO: joshuaingber/upper-peninsula-economic-report
+          TARGET_BRANCH: main
+          TOKEN: ${{ secrets.EMBEDS_PUSH_TOKEN }}
+        run: |
+          git clone --branch "$TARGET_BRANCH" --depth 1 \
+            "https://x-access-token:${TOKEN}@github.com/${TARGET_REPO}.git" target-site
+
+          for d in docs/embeds/*/; do
+            county=$(basename "$d")
+            mkdir -p "target-site/docs/embeds/${county}"
+            for f in housing-median-value.html ai-risk-score.html; do
+              if [ -f "${d}${f}" ]; then
+                cp "${d}${f}" "target-site/docs/embeds/${county}/${f}"
+              fi
+            done
+          done
+
+          cd target-site
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "Update housing and AI-risk embeds"
+          git push
+
+      - name: Commit and push if changed
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: 'Update dashboard data'
+          # Bare 'docs' (no glob) so git add recurses into docs/embeds/<county>/.
+          # The 'docs/*' glob would only match top-level files and silently skip embeds.
+          # Also commit the two FRED caches so each successful run refreshes the
+          # last-good fallback used when a later fetch fails (see data/fetch_fred.py).
+          file_pattern: docs data/cache/qcew_fred_gdp.parquet data/cache/qcew_fred_unrate.parquet
