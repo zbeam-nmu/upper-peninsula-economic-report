@@ -29,6 +29,7 @@ from data.fetch import fetch_all_data
 from data.aggregate_dataframe import get_aggregate_data
 from data.clean import (
     clean, get_total_covered, get_latest_quarter, get_growth_quadrant_data,
+    latest_gdp_with_growth, latest_unrate_with_yoy, latest_irs_net,
 )
 from data.analysis import (
     deseasonalize_trend, project_trend, periods_to_current_quarter,
@@ -757,9 +758,49 @@ def _secondary_row_html(secondary, county_name=None):
         f'<div class="kpi-value">{irs_value}</div>{irs_delta}{irs_period}</div>'
         f'</div>'
     )
+
+
+UP = "Upper Peninsula"
+
+
+def _secondary_for(county_name, df_gdp, df_unrate, df_irs):
+    """Second-row data for a county, or the 15-county aggregate for UP."""
+    if county_name != UP:
+        return {
+            "gdp": latest_gdp_with_growth(df_gdp, county_name),
+            "unrate": latest_unrate_with_yoy(df_unrate, county_name),
+            "irs": latest_irs_net(df_irs, county_name),
+        }
+
+    gdp, unrate, irs = {}, {}, {}
+
+    if not df_gdp.empty:
+        n = df_gdp["county_name"].nunique()
+        counts = df_gdp.groupby("date")["county_name"].nunique()
+        full = counts[counts == n].index
+        g = df_gdp[df_gdp["date"].isin(full)]
+        g = g.groupby("date", as_index=False)["value"].sum()
+        g["county_name"] = UP
+        gdp = latest_gdp_with_growth(g, UP)
+
+    if not df_unrate.empty:
+        u = df_unrate.groupby("date", as_index=False)["value"].mean()
+        u["county_name"] = UP
+        unrate = latest_unrate_with_yoy(u, UP)
+
+    if not df_irs.empty:
+        year = df_irs["tax_year"].max()
+        total = df_irs[df_irs["tax_year"] == year]["net_exemptions"].sum()
+        irs = latest_irs_net(
+            pd.DataFrame([{"county_name": UP, "tax_year": year, "net_exemptions": total}]),
+            UP,
+        )
+
+    return {"gdp": gdp, "unrate": unrate, "irs": irs}
+
+
 def _display_name(county_name):
     return "Upper Peninsula" if county_name == "Upper Peninsula" else f"{county_name} County"
-
 
 def _latest_housing(county_housing_df):
     """(formatted latest median home value, YoY % or None) — same logic as app.py."""
@@ -780,7 +821,7 @@ def _latest_housing(county_housing_df):
 
 # Builds the HTML for one county's KPI card: employment, establishments, and
 # average salary, plus the optional second row.
-def build_kpi_card(county_df, county_name, color, secondary=None):
+def build_kpi_card(county_df, county_name, color, secondary=None, housing_df=None):
     """Generate HTML for one county KPI card (primary + optional secondary row).
 
     Takes the county's latest-quarter total-covered row and shows its
@@ -1497,11 +1538,9 @@ def build_html(df, housing_df, mit_ai_risk_merged_df=None):
         county_id = county_name.lower().replace(" ", "-")
         active = " active" if idx == 0 else ""
         color = COUNTY_COLORS.get(county_name, FAU_BLUE)
-        secondary = {
-            "gdp": latest_gdp_with_growth(df_gdp_secondary, county_name),
-            "unrate": latest_unrate_with_yoy(df_unrate_secondary, county_name),
-            "irs": latest_irs_net(df_irs_secondary, county_name),
-        }
+        secondary = _secondary_for(
+            county_name, df_gdp_secondary, df_unrate_secondary, df_irs_secondary
+        )
         display = _display_name(county_name)
         tab_buttons += (
             f'<button class="tab-btn{active}" data-tab="{county_id}" '
@@ -1512,7 +1551,7 @@ def build_html(df, housing_df, mit_ai_risk_merged_df=None):
 
         sections = [
             f'<div class="snapshot-row single-county">'
-            f'{build_kpi_card(county_df, county_name, color, secondary)}</div>',
+            f'{build_kpi_card(county_df, county_name, color, secondary, housing_df)}</div>',
             KPI_CAPTION_HTML,
         ]
         for _slug, builder in section_builders:
@@ -1670,25 +1709,23 @@ def write_embeds(df, housing_df, mit_ai_risk_merged_df=None):
         )
 
     # ── Per-county KPI + chart embeds for the largest county economies. ──────
-    order = _detail_counties(df)
+    aggregate_df = get_aggregate_data(df)
+    order = _detail_locations(df)
     for county_name in order:
-        county_df = df[df["county_name"] == county_name]
+        county_df = (aggregate_df if county_name == "Upper Peninsula"
+                 else df[df["county_name"] == county_name])
         county_id = county_name.lower().replace(" ", "-")
         color = COUNTY_COLORS.get(county_name, FAU_BLUE)
-        secondary = {
-            "gdp": latest_gdp_with_growth(df_gdp, county_name),
-            "unrate": latest_unrate_with_yoy(df_unrate, county_name),
-            "irs": latest_irs_net(df_irs, county_name),
-        }
-        card_html = build_kpi_card(county_df, county_name, color, secondary)
+        secondary = _secondary_for(county_name, df_gdp, df_unrate, df_irs)
+        card_html = build_kpi_card(county_df, county_name, color, secondary, housing_df)
         body = (
             f'<h2 style="color: {FAU_BLUE}; margin-bottom: 0.5rem;">'
-            f'{county_name} County Snapshot</h2>'
+            f'{_display_name(county_name)} County Snapshot</h2>'
             f'<div class="snapshot-row single-county">{card_html}</div>'
             f'{KPI_CAPTION_HTML}'
         )
         (embeds_dir / f"kpi-{county_id}.html").write_text(
-            wrap_as_embed(body, {}, f"{county_name} County — KPI Snapshot"),
+            wrap_as_embed(body, {}, f"{_display_name(county_name)} — KPI Snapshot"),
             encoding="utf-8",
         )
 
@@ -1696,7 +1733,7 @@ def write_embeds(df, housing_df, mit_ai_risk_merged_df=None):
         county_dir.mkdir(parents=True, exist_ok=True)
         for slug, builder in section_builders:
             section_html, section_figs = builder(county_df, county_name, county_id)
-            title = f"{county_name} County — {slug.replace('-', ' ').title()}"
+            title = f"{_display_name(county_name)} — {slug.replace('-', ' ').title()}"
             (county_dir / f"{slug}.html").write_text(
                 wrap_as_embed(section_html, section_figs, title),
                 encoding="utf-8",
