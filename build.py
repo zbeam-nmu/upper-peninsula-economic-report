@@ -26,6 +26,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from data.fetch import fetch_all_data
+from data.aggregate_dataframe import get_aggregate_data
 from data.clean import (
     clean, get_total_covered, get_latest_quarter, get_growth_quadrant_data,
 )
@@ -96,6 +97,9 @@ def _detail_counties(df) -> list[str]:
         return top["county_name"].tolist()
     return list(COUNTIES.values())[:DETAIL_COUNTY_N]
 
+def _detail_locations(df):
+    """Return Aggregate plus the individual counties."""
+    return ["Upper Peninsula", *_detail_counties(df)]
 # ── CSS ──────────────────────────────────────────────────────────────────────
 
 # Shared WCAG 2.1 AA layer, appended to BOTH the main and embed stylesheets.
@@ -689,7 +693,7 @@ def _delta_html(pct):
 
 # Builds the second row of a KPI card: real GDP, unemployment rate, and net
 # migration. Any missing value shows "—" and "(unavailable)".
-def _secondary_row_html(secondary):
+def _secondary_row_html(secondary, county_name=None):
     """Build the second KPI row HTML — Real GDP, Unemployment, Net Migration.
 
     `secondary` is a dict with optional "gdp", "unrate", and "irs" entries (the
@@ -703,7 +707,8 @@ def _secondary_row_html(secondary):
     gdp = secondary.get("gdp") or {}
     unr = secondary.get("unrate") or {}
     irs = secondary.get("irs") or {}
-
+    unr_label = ("Simple Average Unemployment Rate"
+                 if county_name == "Upper Peninsula" else "Unemployment rate")
     if gdp:
         gdp_value = f"${gdp['value_billions']:.1f}B"
         growth = gdp["yoy_growth"]
@@ -746,13 +751,32 @@ def _secondary_row_html(secondary):
         f'<div class="kpi-row secondary">'
         f'<div class="kpi-item"><div class="kpi-label">Real GDP</div>'
         f'<div class="kpi-value">{gdp_value}</div>{gdp_delta}{gdp_period}</div>'
-        f'<div class="kpi-item"><div class="kpi-label">Unemployment rate</div>'
+        f'<div class="kpi-item"><div class="kpi-label">{unr_label}</div>'
         f'<div class="kpi-value">{unr_value}</div>{unr_delta}{unr_period}</div>'
         f'<div class="kpi-item"><div class="kpi-label">Net Migration</div>'
         f'<div class="kpi-value">{irs_value}</div>{irs_delta}{irs_period}</div>'
         f'</div>'
     )
+def _display_name(county_name):
+    return "Upper Peninsula" if county_name == "Upper Peninsula" else f"{county_name} County"
 
+
+def _latest_housing(county_housing_df):
+    """(formatted latest median home value, YoY % or None) — same logic as app.py."""
+    if county_housing_df is None or county_housing_df.empty:
+        return "—", None
+    rows = county_housing_df.sort_values("year")
+    latest = rows.iloc[-1]
+    val = latest["median_home_value"]
+    if pd.isna(val):
+        return "—", None
+    prior = rows[rows["year"] == latest["year"] - 1]
+    pct = None
+    if not prior.empty:
+        pv = prior.iloc[-1]["median_home_value"]
+        if pd.notna(pv) and pv != 0:
+            pct = (val - pv) / pv * 100
+    return fmt_currency(val), pct
 
 # Builds the HTML for one county's KPI card: employment, establishments, and
 # average salary, plus the optional second row.
@@ -766,21 +790,29 @@ def build_kpi_card(county_df, county_name, color, secondary=None):
     card that says "No data available." The county color is used for the left
     border and the name.
     """
+    display = _display_name(county_name)                                              # EDIT 2: new line
     totals = get_total_covered(county_df)
     latest = get_latest_quarter(totals)
 
     if latest.empty:
         return (
             f'<div class="county-card" style="border-left-color: {color};">'
-            f'<h3 style="color: {color};">{county_name} County</h3>'
+            f'<h3 style="color: {color};">{display}</h3>'                             # EDIT 2: was {county_name} County
             f'<p>No data available.</p></div>'
         )
 
     row = latest.iloc[0]
-    secondary_html = _secondary_row_html(secondary)
+    secondary_html = _secondary_row_html(secondary, county_name)                      # EDIT 3: pass county_name
+
+    county_housing = (                                                                # EDIT 4: all new (3 blocks)
+        housing_df[housing_df["county_name"] == county_name]
+        if housing_df is not None and not housing_df.empty else None
+    )
+    housing_value, housing_pct = _latest_housing(county_housing)
+
     return (
         f'<div class="county-card" style="border-left-color: {color};">'
-        f'<h3 style="color: {color};">{county_name} County</h3>'
+        f'<h3 style="color: {color};">{display}</h3>'                                 # EDIT 2 again
         f'<div class="kpi-row">'
         f'<div class="kpi-item"><div class="kpi-label">Employment</div>'
         f'<div class="kpi-value">{fmt_number(row["employment"])}</div>'
@@ -791,6 +823,9 @@ def build_kpi_card(county_df, county_name, color, secondary=None):
         f'<div class="kpi-item"><div class="kpi-label">Average Salary</div>'
         f'<div class="kpi-value">{fmt_currency(row["avg_annual_wage"])}</div>'
         f'{_delta_html(row.get("oty_avg_wkly_wage_pct_chg"))}</div>'
+        f'<div class="kpi-item"><div class="kpi-label">Median Home Value</div>'       # EDIT 4: new 4th item
+        f'<div class="kpi-value">{housing_value}</div>'
+        f'{_delta_html(housing_pct)}</div>'
         f'</div>{secondary_html}</div>'
     )
 
@@ -1369,14 +1404,14 @@ def _section_builders(mit_ai_risk_merged_df):
     return builders
 
 
-def build_html(df, mit_ai_risk_merged_df=None):
+def build_html(df, housing_df, mit_ai_risk_merged_df=None):
     """Assemble the complete static HTML dashboard."""
     from data.fetch_fred import fetch_real_gdp, fetch_unemployment_rate
     from data.fetch_irs_migration import fetch_irs_migration
     from data.clean import (
         latest_gdp_with_growth, latest_unrate_with_yoy, latest_irs_net,
     )
-
+    aggregate_df = get_aggregate_data(df)
     figures = {}
     if mit_ai_risk_merged_df is None:
         mit_ai_risk_merged_df = _load_ai_risk_data(df)
@@ -1453,9 +1488,12 @@ def build_html(df, mit_ai_risk_merged_df=None):
     # ── Per-county detail tabs (KPI card + four chart sections each), limited
     # to the largest county economies.
     tab_buttons = ""
-    tab_content = ""
-    for idx, county_name in enumerate(_detail_counties(df)):
-        county_df = df[df["county_name"] == county_name]
+    tab_content = ""   
+    for idx, county_name in enumerate(_detail_locations(df)):
+        if county_name == "Upper Peninsula":
+            county_df = aggregate_df
+        else:
+            county_df = df[df["county_name"] == county_name]
         county_id = county_name.lower().replace(" ", "-")
         active = " active" if idx == 0 else ""
         color = COUNTY_COLORS.get(county_name, FAU_BLUE)
@@ -1464,12 +1502,12 @@ def build_html(df, mit_ai_risk_merged_df=None):
             "unrate": latest_unrate_with_yoy(df_unrate_secondary, county_name),
             "irs": latest_irs_net(df_irs_secondary, county_name),
         }
-
+        display = _display_name(county_name)
         tab_buttons += (
             f'<button class="tab-btn{active}" data-tab="{county_id}" '
             f'aria-pressed="{"true" if idx == 0 else "false"}" '
             f'aria-controls="{county_id}" '
-            f"onclick=\"showTab('{county_id}')\">{county_name} County</button>\n"
+            f"onclick=\"showTab('{county_id}')\">{display}</button>\n"
         )
 
         sections = [
@@ -1548,7 +1586,7 @@ KPI_CAPTION_HTML = (
 )
 
 
-def write_embeds(df, mit_ai_risk_merged_df=None):
+def write_embeds(df, housing_df, mit_ai_risk_merged_df=None):
     """Emit standalone embed pages: the region overview visuals plus per-county
     KPI cards and chart sections for the largest county economies.
 
@@ -1670,6 +1708,26 @@ def write_embeds(df, mit_ai_risk_merged_df=None):
     )
 
 
+from data.fetch_Census_housing import get_up_housing
+
+def _load_housing():
+    """Census housing data; an empty DataFrame (cells show '—') on any failure."""
+    try:
+        return get_up_housing()
+    except Exception as exc:  # must never break the build
+        print(f"WARNING: housing data unavailable ({exc}); housing KPI/chart will be blank")
+        return pd.DataFrame()
+
+from data.fetch_Census_housing import get_up_housing
+
+def _load_housing():
+    """Census housing data; an empty DataFrame (cells show '—') on any failure."""
+    try:
+        return get_up_housing()
+    except Exception as exc:  # must never break the build
+        print(f"WARNING: housing data unavailable ({exc}); housing KPI/chart will be blank")
+        return pd.DataFrame()
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -1707,10 +1765,10 @@ if __name__ == "__main__":
                 "fetch returned no data and no fallback cache exists; the "
                 "secondary KPI row will show '—'. Publishing fresh QCEW data."
             )
-
+    housing_df = _load_housing()
     print("Building HTML dashboard...")
     mit_ai_risk_merged_df = _load_ai_risk_data(raw)
-    html = build_html(df, mit_ai_risk_merged_df)
+    html = build_html(df, housing_df, mit_ai_risk_merged_df)
 
     DOCS_DIR.mkdir(exist_ok=True)
     output = DOCS_DIR / "index.html"
@@ -1718,4 +1776,4 @@ if __name__ == "__main__":
     print(f"Done! {output} ({output.stat().st_size / 1024:.0f} KB)")
 
     print("Building embed pages...")
-    write_embeds(df, mit_ai_risk_merged_df)
+    write_embeds(df,housing_df, mit_ai_risk_merged_df)
